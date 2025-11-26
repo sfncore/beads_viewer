@@ -13,14 +13,16 @@
 *   **Visual Polish**: A vibrant "Dracula" theme with emoji status icons (🐛, ✨, 🏔️) and priority badges (🔥, ⚡).
 
 ### 🧠 Deep Analytics
-*   **Graph Theory Engine**: Builds the dependency graph and scores each issue with PageRank, Betweenness, Eigenvector centrality, HITS hubs/authorities, and a depth-based impact metric.
-*   **Impact & Flow Scores**: Keystone tasks (deep dependency chains) surface with sparklines and heatmap coloring in ultra-wide mode; hub/authority scores reveal which issues aggregate dependencies vs. unblock others.
-*   **Insights Dashboard (`i`)**: Summaries for Bottlenecks, Keystones, Influencers (eigenvector), Flow Roles (hubs/authorities), cycles, and network density, laid out in multi-column panels.
+*   **Graph Theory Engine**: `bv` builds a Directed Acyclic Graph (DAG) of your project's dependencies to uncover structural insights.
+*   **Impact Scores**: Automatically identifies "Keystone" tasks—those blocking the deepest chains of downstream work—and visualizes them with Sparklines (`███▌`) and Heatmaps (🌋/🏔️) in Ultra-Wide mode.
+*   **Insights Dashboard**: Press `i` to open a dedicated panel showing:
+    *   **Bottlenecks**: Tasks with high Betweenness Centrality.
+    *   **Keystones**: High-impact tasks critical to the critical path.
+    *   **Network Health**: Cycle detection and cluster density metrics.
 
 ### ⚡ Workflow & Integration
 *   **Instant Filtering**: Filter by status with single keystrokes: `o` (Open), `r` (Ready/Unblocked), `c` (Closed), `a` (All).
 *   **Markdown Export**: Generate comprehensive status reports with `bv --export-md report.md`. Includes embedded **Mermaid.js** dependency graphs that render visually on GitHub/GitLab.
-*   **Issue Detail Metrics**: The detail pane shows graph scores (PR/BW/EV, hub/authority) alongside timelines, dependencies, comments, and acceptance criteria.
 *   **Smart Search**: Fuzzy search across Titles, IDs, Assignees, and Labels.
 *   **Self-Updating**: Automatically checks for and notifies you of new releases.
 
@@ -28,7 +30,7 @@
 
 ### Quick Install
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/master/install.sh | bash
 ```
 
 ### Build from Source
