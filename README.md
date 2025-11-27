@@ -7,6 +7,31 @@
 
 > **The elegant, keyboard-driven terminal interface for the [Beads](https://github.com/steveyegge/beads) issue tracker.**
 
+<div align="center" style="margin: 1.2em 0;">
+  <table>
+    <tr>
+      <td align="center" style="padding: 8px;">
+        <img src="screenshots/screenshot_01__main_screen.webp" alt="Main split view" width="420" />
+        <div><sub>Main split view: fast list + rich details</sub></div>
+      </td>
+      <td align="center" style="padding: 8px;">
+        <img src="screenshots/screenshot_03__kanban_view.webp" alt="Kanban board" width="420" />
+        <div><sub>Kanban board (`b`) for flow at a glance</sub></div>
+      </td>
+    </tr>
+    <tr>
+      <td align="center" style="padding: 8px;">
+        <img src="screenshots/screenshot_02__insights_view.webp" alt="Insights view" width="420" />
+        <div><sub>Insights panel: PageRank, critical path, cycles</sub></div>
+      </td>
+      <td align="center" style="padding: 8px;">
+        <img src="screenshots/screenshot_04__graph_view.webp" alt="Graph view" width="420" />
+        <div><sub>Graph view (`g`): navigate the dependency DAG</sub></div>
+      </td>
+    </tr>
+  </table>
+</div>
+
 ### ⚡ Quick Install
 
 ```bash
@@ -50,6 +75,24 @@ Don't just read the title. `bv` gives you the full picture:
 *   **Ultra-Wide Mode:** On large monitors, the list expands to show extra columns like sparklines and label tags.
 
 ---
+
+## 🤖 Ready-made Blurb to Drop Into Your AGENTS.md or CLAUDE.md Files
+
+```
+### Using bv as an AI sidecar
+
+  bv is a fast terminal UI for Beads projects (.beads/beads.jsonl). It renders lists/details and precomputes dependency metrics (PageRank, critical path, cycles, etc.) so you instantly see blockers and execution order. For agents, it’s a graph sidecar: instead of parsing JSONL or risking hallucinated traversal, call the robot flags to get deterministic, dependency-aware outputs.
+
+  - bv --robot-help — shows all AI-facing commands.
+  - bv --robot-insights — JSON graph metrics (PageRank, betweenness, HITS, critical path, cycles) with top-N summaries for quick triage.
+  - bv --robot-plan — JSON execution plan: parallel tracks, items per track, and unblocks lists showing what each item frees up.
+  - bv --robot-priority — JSON priority recommendations with reasoning and confidence.
+  - bv --robot-recipes — list recipes (default, actionable, blocked, etc.); apply via bv --recipe <name> to pre-filter/sort before other flags.
+  - bv --robot-diff --diff-since <commit|date> — JSON diff of issue changes, new/closed items, and cycles introduced/resolved.
+
+  Use these commands instead of hand-rolling graph logic; bv already computes the hard parts so agents can act safely and quickly.
+```
+
 
 ## 📐 Architecture & Design
 

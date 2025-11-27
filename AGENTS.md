@@ -1,43 +1,15 @@
-# Agents Guide to Beads Viewer (bv)
+### Using bv as an AI sidecar
 
-`bv` is a high-performance TUI for the [Beads](https://github.com/steveyegge/beads) issue tracker.
+  bv is a fast terminal UI for Beads projects (.beads/beads.jsonl). It renders lists/details and precomputes dependency metrics (PageRank, critical path, cycles, etc.) so you instantly see blockers and execution order. For agents, it’s a graph sidecar: instead of parsing JSONL or risking hallucinated traversal, call the robot flags to get deterministic, dependency-aware outputs.
 
-## Features
+  - bv --robot-help — shows all AI-facing commands.
+  - bv --robot-insights — JSON graph metrics (PageRank, betweenness, HITS, critical path, cycles) with top-N summaries for quick triage.
+  - bv --robot-plan — JSON execution plan: parallel tracks, items per track, and unblocks lists showing what each item frees up.
+  - bv --robot-priority — JSON priority recommendations with reasoning and confidence.
+  - bv --robot-recipes — list recipes (default, actionable, blocked, etc.); apply via bv --recipe <name> to pre-filter/sort before other flags.
+  - bv --robot-diff --diff-since <commit|date> — JSON diff of issue changes, new/closed items, and cycles introduced/resolved.
 
-- **Split View Dashboard**: On wide terminals (>100 cols), shows a list on the left and rich details on the right.
-- **Markdown Rendering**: Renders issue descriptions, notes, and comments with syntax highlighting.
-- **Live Filtering**: Filter by Open (`o`), Closed (`c`), Ready (`r`), or All (`a`).
-- **Dependency Graph**: Visualizes blockers and dependencies.
-
-## Navigation
-
-### Global
-- `q` / `Ctrl+C`: Quit
-- `Tab`: Switch focus between List and Details pane (Split View only)
-
-### List View
-- `j` / `↓`: Next issue
-- `k` / `↑`: Previous issue
-- `Enter`: Open details (Mobile view) or Focus details (Split view)
-- `o`: Filter Open
-- `c`: Filter Closed
-- `r`: Filter Ready (Open + Unblocked)
-- `a`: Show All
-
-### Details View
-- `j` / `k` / Arrows: Scroll content
-- `Esc`: Back to list (Mobile view)
-
-## Installation
-
-```bash
-./install.sh
-```
-
-## Development
-
-Built with Go + Charmbracelet (Bubble Tea, Lipgloss, Glamour).
-Follows `GOLANG_BEST_PRACTICES.md`.
+  Use these commands instead of hand-rolling graph logic; bv already computes the hard parts so agents can act safely and quickly.
 
 
 ---
@@ -152,3 +124,7 @@ Parse: `file:line:col` → location | 💡 → how to fix | Exit 0/1 → pass/fa
 * ❌ Ignore findings → ✅ Investigate each.
 * ❌ Full scan per edit → ✅ Scope to changed files.
 * ❌ Fix symptom only → ✅ Fix root cause.
+
+---
+
+You should try to follow all best practices laid out in the file GOLANG_BEST_PRACTICES.md
