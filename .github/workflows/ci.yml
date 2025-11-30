@@ -25,15 +25,14 @@ jobs:
 
     - name: Enforce Coverage Threshold (project)
       run: |
-        total=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
-        echo "Total coverage: ${total}%"
         python - <<'PY'
-import sys, os
-total = float(os.environ['total'])
+import subprocess, sys
+out = subprocess.check_output("go tool cover -func=coverage.out | tail -1 | awk '{print $3}'", shell=True).decode().strip().rstrip('%')
+total = float(out or 0)
 threshold = 80.0
+print(f"Total coverage: {total:.2f}% (threshold {threshold}%)")
 if total < threshold:
-    print(f"Coverage {total:.2f}% is below threshold {threshold}%")
-    sys.exit(1)
+    sys.exit(f"Coverage {total:.2f}% is below threshold {threshold}%")
 PY
 
     - name: Enforce Coverage Thresholds (per-package, coarse)
