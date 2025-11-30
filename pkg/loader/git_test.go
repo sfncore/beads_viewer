@@ -52,9 +52,9 @@ func setupTestGitRepo(t *testing.T) (string, func()) {
 	time.Sleep(1500 * time.Millisecond)
 
 	// Add a third issue in second commit
-	updatedContent := `{"id":"ISSUE-1","title":"First issue","status":"open","priority":1}
-{"id":"ISSUE-2","title":"Second issue","status":"open","priority":2}
-{"id":"ISSUE-3","title":"Third issue","status":"open","priority":3}
+	updatedContent := `{"id":"ISSUE-1","title":"First issue","status":"open","priority":1,"issue_type":"task"}
+{"id":"ISSUE-2","title":"Second issue","status":"open","priority":2,"issue_type":"task"}
+{"id":"ISSUE-3","title":"Third issue","status":"open","priority":3,"issue_type":"task"}
 `
 	if err := os.WriteFile(beadsFile, []byte(updatedContent), 0644); err != nil {
 		cleanup()
@@ -293,8 +293,8 @@ func TestGitLoader_InvalidRevision(t *testing.T) {
 }
 
 func TestParseJSONL(t *testing.T) {
-	data := []byte(`{"id":"TEST-1","title":"Test","status":"open","priority":1}
-{"id":"TEST-2","title":"Test 2","status":"closed","priority":2}
+	data := []byte(`{"id":"TEST-1","title":"Test","status":"open","priority":1,"issue_type":"task"}
+{"id":"TEST-2","title":"Test 2","status":"closed","priority":2,"issue_type":"task"}
 `)
 	issues, err := parseJSONL(data)
 	if err != nil {
@@ -311,9 +311,9 @@ func TestParseJSONL(t *testing.T) {
 }
 
 func TestParseJSONL_SkipsMalformed(t *testing.T) {
-	data := []byte(`{"id":"GOOD-1","title":"Good","status":"open","priority":1}
+	data := []byte(`{"id":"GOOD-1","title":"Good","status":"open","priority":1,"issue_type":"task"}
 {this is not valid json}
-{"id":"GOOD-2","title":"Good 2","status":"open","priority":2}
+{"id":"GOOD-2","title":"Good 2","status":"open","priority":2,"issue_type":"task"}
 `)
 	issues, err := parseJSONL(data)
 	if err != nil {
@@ -327,9 +327,9 @@ func TestParseJSONL_SkipsMalformed(t *testing.T) {
 }
 
 func TestParseJSONL_EmptyLines(t *testing.T) {
-	data := []byte(`{"id":"TEST-1","title":"Test","status":"open","priority":1}
+	data := []byte(`{"id":"TEST-1","title":"Test","status":"open","priority":1,"issue_type":"task"}
 
-{"id":"TEST-2","title":"Test 2","status":"open","priority":2}
+{"id":"TEST-2","title":"Test 2","status":"open","priority":2,"issue_type":"task"}
 
 `)
 	issues, err := parseJSONL(data)

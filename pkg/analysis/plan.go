@@ -119,6 +119,8 @@ func (a *Analyzer) computeUnblocks(issueID string) []string {
 		}
 	}
 
+	// Sort for determinism
+	sort.Strings(unblocks)
 	return unblocks
 }
 
@@ -243,10 +245,19 @@ func (a *Analyzer) computePlanSummary(actionable []model.Issue, unblocksMap map[
 		return PlanSummary{}
 	}
 
+	// Sort actionable issues by ID for deterministic tie-breaking
+	// We make a shallow copy to avoid modifying the caller's slice order,
+	// although in GetExecutionPlan it wouldn't matter much.
+	sortedActionable := make([]model.Issue, len(actionable))
+	copy(sortedActionable, actionable)
+	sort.Slice(sortedActionable, func(i, j int) bool {
+		return sortedActionable[i].ID < sortedActionable[j].ID
+	})
+
 	highestID := ""
 	highestCount := -1
 
-	for _, issue := range actionable {
+	for _, issue := range sortedActionable {
 		count := len(unblocksMap[issue.ID])
 		if count > highestCount {
 			highestCount = count
