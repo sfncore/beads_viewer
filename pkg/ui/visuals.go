@@ -68,3 +68,50 @@ func GetHeatmapColor(score float64) lipgloss.Color {
 	}
 	return GradientLow
 }
+
+// RepoColors maps repo prefixes to distinctive colors for visual differentiation
+var RepoColors = []lipgloss.Color{
+	lipgloss.Color("#FF6B6B"), // Coral red
+	lipgloss.Color("#4ECDC4"), // Teal
+	lipgloss.Color("#45B7D1"), // Sky blue
+	lipgloss.Color("#96CEB4"), // Sage green
+	lipgloss.Color("#DDA0DD"), // Plum
+	lipgloss.Color("#F7DC6F"), // Gold
+	lipgloss.Color("#BB8FCE"), // Lavender
+	lipgloss.Color("#85C1E9"), // Light blue
+}
+
+// GetRepoColor returns a consistent color for a repo prefix based on hash
+func GetRepoColor(prefix string) lipgloss.Color {
+	if prefix == "" {
+		return ColorMuted
+	}
+	// Simple hash based on prefix characters
+	hash := 0
+	for _, c := range prefix {
+		hash = (hash*31 + int(c)) % len(RepoColors)
+	}
+	if hash < 0 {
+		hash = -hash
+	}
+	return RepoColors[hash%len(RepoColors)]
+}
+
+// RenderRepoBadge creates a compact colored badge for a repository prefix
+// Example: "api" -> "[API]" with distinctive color
+func RenderRepoBadge(prefix string) string {
+	if prefix == "" {
+		return ""
+	}
+	// Uppercase and limit to 4 chars for compactness
+	display := strings.ToUpper(prefix)
+	if len(display) > 4 {
+		display = display[:4]
+	}
+
+	color := GetRepoColor(prefix)
+	return lipgloss.NewStyle().
+		Foreground(color).
+		Bold(true).
+		Render("[" + display + "]")
+}

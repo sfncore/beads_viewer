@@ -25,7 +25,7 @@ func TestModelFiltering(t *testing.T) {
 		},
 	}
 
-	m := ui.NewModel(issues, nil)
+	m := ui.NewModel(issues, nil, "")
 
 	// Test "All"
 	if len(m.FilteredIssues()) != 5 {
@@ -72,6 +72,7 @@ func TestFormatTimeRel(t *testing.T) {
 		{now.Add(-2 * time.Hour), "2h ago"},
 		{now.Add(-25 * time.Hour), "1d ago"},
 		{now.Add(-48 * time.Hour), "2d ago"},
+		{time.Time{}, "unknown"},
 	}
 
 	for _, tt := range tests {
@@ -87,7 +88,7 @@ func TestTimeTravelMode(t *testing.T) {
 		{ID: "1", Title: "Test Issue", Status: model.StatusOpen, Priority: 1},
 	}
 
-	m := ui.NewModel(issues, nil)
+	m := ui.NewModel(issues, nil, "")
 
 	// Initially not in time-travel mode
 	if m.IsTimeTravelMode() {
@@ -123,7 +124,7 @@ func TestGetTypeIconMD(t *testing.T) {
 }
 
 func TestModelCreationWithEmptyIssues(t *testing.T) {
-	m := ui.NewModel([]model.Issue{}, nil)
+	m := ui.NewModel([]model.Issue{}, nil, "")
 
 	if len(m.FilteredIssues()) != 0 {
 		t.Errorf("Expected 0 issues for empty input, got %d", len(m.FilteredIssues()))
@@ -140,7 +141,7 @@ func TestIssueItemDiffStatus(t *testing.T) {
 		{ID: "1", Title: "Test", Status: model.StatusOpen},
 	}
 
-	m := ui.NewModel(issues, nil)
+	m := ui.NewModel(issues, nil, "")
 
 	// In normal mode, DiffStatus should be None
 	filtered := m.FilteredIssues()

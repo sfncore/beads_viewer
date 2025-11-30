@@ -135,6 +135,30 @@ func (m *InsightsModel) SetInsights(ins analysis.Insights) {
 	m.insights = ins
 }
 
+// isPanelSkipped returns true and a reason if the metric for this panel was skipped
+func (m *InsightsModel) isPanelSkipped(panel MetricPanel) (bool, string) {
+	if m.insights.Stats == nil {
+		return false, ""
+	}
+	config := m.insights.Stats.Config
+
+	switch panel {
+	case PanelBottlenecks:
+		if !config.ComputeBetweenness {
+			return true, config.BetweennessSkipReason
+		}
+	case PanelHubs, PanelAuthorities:
+		if !config.ComputeHITS {
+			return true, config.HITSSkipReason
+		}
+	case PanelCycles:
+		if !config.ComputeCycles {
+			return true, config.CyclesSkipReason
+		}
+	}
+	return false, ""
+}
+
 // Navigation methods
 func (m *InsightsModel) MoveUp() {
 	count := m.currentPanelItemCount()
@@ -291,10 +315,16 @@ func (m *InsightsModel) renderMetricPanel(panel MetricPanel, width, height int, 
 	isFocused := m.focusedPanel == panel
 	selectedIdx := m.selectedIndex[panel]
 
+	// Check if this metric was skipped
+	skipped, skipReason := m.isPanelSkipped(panel)
+
 	// Panel border style
 	borderColor := t.Secondary
 	if isFocused {
 		borderColor = t.Primary
+	}
+	if skipped {
+		borderColor = t.Subtext // Dimmed for skipped panels
 	}
 
 	panelStyle := t.Renderer.NewStyle().
@@ -306,7 +336,9 @@ func (m *InsightsModel) renderMetricPanel(panel MetricPanel, width, height int, 
 
 	// Title with count and value range
 	titleStyle := t.Renderer.NewStyle().Bold(true)
-	if isFocused {
+	if skipped {
+		titleStyle = titleStyle.Foreground(t.Subtext)
+	} else if isFocused {
 		titleStyle = titleStyle.Foreground(t.Primary)
 	} else {
 		titleStyle = titleStyle.Foreground(t.Secondary)
@@ -314,13 +346,21 @@ func (m *InsightsModel) renderMetricPanel(panel MetricPanel, width, height int, 
 
 	var sb strings.Builder
 
-	// Header line: Icon Title (count)
-	headerLine := fmt.Sprintf("%s %s (%d)", info.Icon, info.Title, len(items))
+	// Header line: Icon Title (count) or [Skipped]
+	var headerLine string
+	if skipped {
+		headerLine = fmt.Sprintf("%s %s [Skipped]", info.Icon, info.Title)
+	} else {
+		headerLine = fmt.Sprintf("%s %s (%d)", info.Icon, info.Title, len(items))
+	}
 	sb.WriteString(titleStyle.Render(headerLine))
 	sb.WriteString("\n")
 
 	// Subtitle: metric name
 	subtitleStyle := t.Renderer.NewStyle().Foreground(t.Subtext).Italic(true)
+	if skipped {
+		subtitleStyle = subtitleStyle.Foreground(t.Subtext)
+	}
 	sb.WriteString(subtitleStyle.Render(info.ShortDesc))
 	sb.WriteString("\n")
 
@@ -334,6 +374,26 @@ func (m *InsightsModel) renderMetricPanel(panel MetricPanel, width, height int, 
 	}
 
 	sb.WriteString("\n")
+
+	// If metric was skipped, show skip reason instead of items
+	if skipped {
+		skipStyle := t.Renderer.NewStyle().
+			Foreground(t.Subtext).
+			Italic(true).
+			Width(width - 4).
+			Align(lipgloss.Center)
+
+		reason := skipReason
+		if reason == "" {
+			reason = "Skipped for performance"
+		}
+		sb.WriteString("\n")
+		sb.WriteString(skipStyle.Render(reason))
+		sb.WriteString("\n\n")
+		sb.WriteString(skipStyle.Render("Use --force-full-analysis to compute"))
+
+		return panelStyle.Render(sb.String())
+	}
 
 	// Items list
 	// Calculate visible rows more conservatively
@@ -477,9 +537,15 @@ func (m *InsightsModel) renderCyclesPanel(width, height int, t Theme) string {
 	isFocused := m.focusedPanel == PanelCycles
 	cycles := m.insights.Cycles
 
+	// Check if cycles detection was skipped
+	skipped, skipReason := m.isPanelSkipped(PanelCycles)
+
 	borderColor := t.Secondary
 	if isFocused {
 		borderColor = t.Primary
+	}
+	if skipped {
+		borderColor = t.Subtext // Dimmed for skipped panels
 	}
 
 	panelStyle := t.Renderer.NewStyle().
@@ -490,7 +556,9 @@ func (m *InsightsModel) renderCyclesPanel(width, height int, t Theme) string {
 		Padding(0, 1)
 
 	titleStyle := t.Renderer.NewStyle().Bold(true)
-	if isFocused {
+	if skipped {
+		titleStyle = titleStyle.Foreground(t.Subtext)
+	} else if isFocused {
 		titleStyle = titleStyle.Foreground(t.Primary)
 	} else {
 		titleStyle = titleStyle.Foreground(t.Secondary)
@@ -499,7 +567,12 @@ func (m *InsightsModel) renderCyclesPanel(width, height int, t Theme) string {
 	var sb strings.Builder
 
 	// Header
-	headerLine := fmt.Sprintf("%s %s (%d)", info.Icon, info.Title, len(cycles))
+	var headerLine string
+	if skipped {
+		headerLine = fmt.Sprintf("%s %s [Skipped]", info.Icon, info.Title)
+	} else {
+		headerLine = fmt.Sprintf("%s %s (%d)", info.Icon, info.Title, len(cycles))
+	}
 	sb.WriteString(titleStyle.Render(headerLine))
 	sb.WriteString("\n")
 
@@ -516,6 +589,26 @@ func (m *InsightsModel) renderCyclesPanel(width, height int, t Theme) string {
 	}
 
 	sb.WriteString("\n")
+
+	// If skipped, show skip reason
+	if skipped {
+		skipStyle := t.Renderer.NewStyle().
+			Foreground(t.Subtext).
+			Italic(true).
+			Width(width - 4).
+			Align(lipgloss.Center)
+
+		reason := skipReason
+		if reason == "" {
+			reason = "Skipped for performance"
+		}
+		sb.WriteString("\n")
+		sb.WriteString(skipStyle.Render(reason))
+		sb.WriteString("\n\n")
+		sb.WriteString(skipStyle.Render("Use --force-full-analysis to compute"))
+
+		return panelStyle.Render(sb.String())
+	}
 
 	if len(cycles) == 0 {
 		healthyStyle := t.Renderer.NewStyle().
@@ -745,12 +838,12 @@ func (m *InsightsModel) renderDetailPanel(width, height int, t Theme) string {
 			name  string
 			value float64
 		}{
-			{"PageRank", stats.PageRank[selectedID]},
-			{"Betweenness", stats.Betweenness[selectedID]},
-			{"Eigenvector", stats.Eigenvector[selectedID]},
-			{"Impact", stats.CriticalPathScore[selectedID]},
-			{"Hub", stats.Hubs[selectedID]},
-			{"Authority", stats.Authorities[selectedID]},
+			{"PageRank", stats.GetPageRankScore(selectedID)},
+			{"Betweenness", stats.GetBetweennessScore(selectedID)},
+			{"Eigenvector", stats.GetEigenvectorScore(selectedID)},
+			{"Impact", stats.GetCriticalPathScore(selectedID)},
+			{"Hub", stats.GetHubScore(selectedID)},
+			{"Authority", stats.GetAuthorityScore(selectedID)},
 		}
 
 		for _, metric := range metrics {
@@ -815,7 +908,7 @@ func (m *InsightsModel) renderCalculationProof(selectedID string, width int, t T
 	switch m.focusedPanel {
 	case PanelBottlenecks:
 		// Betweenness: Show shortest path involvement
-		bw := stats.Betweenness[selectedID]
+		bw := stats.GetBetweennessScore(selectedID)
 		sb.WriteString(labelStyle.Render("Betweenness Score: "))
 		sb.WriteString(valueStyle.Render(formatMetricValue(bw)))
 		sb.WriteString("\n\n")
@@ -853,7 +946,7 @@ func (m *InsightsModel) renderCalculationProof(selectedID string, width int, t T
 
 	case PanelKeystones:
 		// Impact Depth: Show the dependency chain
-		impact := stats.CriticalPathScore[selectedID]
+		impact := stats.GetCriticalPathScore(selectedID)
 		sb.WriteString(labelStyle.Render("Impact Depth: "))
 		sb.WriteString(valueStyle.Render(formatMetricValue(impact)))
 		sb.WriteString(labelStyle.Render(" levels deep"))
@@ -885,13 +978,13 @@ func (m *InsightsModel) renderCalculationProof(selectedID string, width int, t T
 
 	case PanelInfluencers:
 		// Eigenvector: Show influential neighbors
-		ev := stats.Eigenvector[selectedID]
+		ev := stats.GetEigenvectorScore(selectedID)
 		sb.WriteString(labelStyle.Render("Eigenvector Centrality: "))
 		sb.WriteString(valueStyle.Render(formatMetricValue(ev)))
 		sb.WriteString("\n\n")
 
 		// Find neighbors and their eigenvector scores
-		neighbors := m.findNeighborsWithScores(selectedID, stats.Eigenvector)
+		neighbors := m.findNeighborsWithScores(selectedID, stats.Eigenvector())
 		if len(neighbors) > 0 {
 			sb.WriteString(labelStyle.Render("Connected to influential beads:\n"))
 			for i, n := range neighbors {
@@ -910,13 +1003,13 @@ func (m *InsightsModel) renderCalculationProof(selectedID string, width int, t T
 
 	case PanelHubs:
 		// Hubs: Show authorities this hub depends on
-		hubScore := stats.Hubs[selectedID]
+		hubScore := stats.GetHubScore(selectedID)
 		sb.WriteString(labelStyle.Render("Hub Score: "))
 		sb.WriteString(valueStyle.Render(formatMetricValue(hubScore)))
 		sb.WriteString("\n\n")
 
 		// Find authorities (dependencies) with their authority scores
-		deps := m.findDependenciesWithScores(selectedID, stats.Authorities)
+		deps := m.findDependenciesWithScores(selectedID, stats.Authorities())
 		if len(deps) > 0 {
 			sb.WriteString(labelStyle.Render("Depends on these authorities:\n"))
 			// Calculate total sum over all items
@@ -940,13 +1033,13 @@ func (m *InsightsModel) renderCalculationProof(selectedID string, width int, t T
 
 	case PanelAuthorities:
 		// Authorities: Show hubs that depend on this authority
-		authScore := stats.Authorities[selectedID]
+		authScore := stats.GetAuthorityScore(selectedID)
 		sb.WriteString(labelStyle.Render("Authority Score: "))
 		sb.WriteString(valueStyle.Render(formatMetricValue(authScore)))
 		sb.WriteString("\n\n")
 
 		// Find hubs (dependents) with their hub scores
-		dependents := m.findDependentsWithScores(selectedID, stats.Hubs)
+		dependents := m.findDependentsWithScores(selectedID, stats.Hubs())
 		if len(dependents) > 0 {
 			sb.WriteString(labelStyle.Render("Hubs that depend on this:\n"))
 			// Calculate total sum over all items
@@ -1133,7 +1226,7 @@ func (m *InsightsModel) buildImpactChain(startID string, maxDepth int) []string 
 		bestDep := ""
 		bestScore := -1.0
 		for _, dep := range deps {
-			score := m.insights.Stats.CriticalPathScore[dep]
+			score := m.insights.Stats.GetCriticalPathScore(dep)
 			if score > bestScore {
 				bestScore = score
 				bestDep = dep

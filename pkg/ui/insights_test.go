@@ -35,16 +35,19 @@ func createTestInsights() analysis.Insights {
 			{"cycle-x", "cycle-y"},
 		},
 		ClusterDensity: 0.42,
-		Stats: &analysis.GraphStats{
-			Betweenness:       map[string]float64{"bottleneck-1": 0.85, "bottleneck-2": 0.65},
-			CriticalPathScore: map[string]float64{"keystone-1": 5.0, "keystone-2": 3.0},
-			Eigenvector:       map[string]float64{"influencer-1": 0.92},
-			Hubs:              map[string]float64{"hub-1": 2.5, "hub-2": 1.8},
-			Authorities:       map[string]float64{"auth-1": 3.2},
-			PageRank:          map[string]float64{"bottleneck-1": 0.15},
-			InDegree:          map[string]int{"bottleneck-1": 3},
-			OutDegree:         map[string]int{"bottleneck-1": 2},
-		},
+		Stats: analysis.NewGraphStatsForTest(
+			map[string]float64{"bottleneck-1": 0.15},                     // pageRank
+			map[string]float64{"bottleneck-1": 0.85, "bottleneck-2": 0.65}, // betweenness
+			map[string]float64{"influencer-1": 0.92},                      // eigenvector
+			map[string]float64{"hub-1": 2.5, "hub-2": 1.8},               // hubs
+			map[string]float64{"auth-1": 3.2},                            // authorities
+			map[string]float64{"keystone-1": 5.0, "keystone-2": 3.0},     // criticalPathScore
+			map[string]int{"bottleneck-1": 2},                            // outDegree
+			map[string]int{"bottleneck-1": 3},                            // inDegree
+			nil,                                                          // cycles
+			0,                                                            // density
+			nil,                                                          // topologicalOrder
+		),
 	}
 }
 
@@ -450,16 +453,17 @@ func TestInsightsModelDetailPanel(t *testing.T) {
 		Bottlenecks: []analysis.InsightItem{
 			{ID: "detailed-issue", Value: 0.75},
 		},
-		Stats: &analysis.GraphStats{
-			Betweenness:       map[string]float64{"detailed-issue": 0.75},
-			CriticalPathScore: map[string]float64{"detailed-issue": 3.0},
-			Eigenvector:       map[string]float64{"detailed-issue": 0.5},
-			Hubs:              map[string]float64{"detailed-issue": 1.0},
-			Authorities:       map[string]float64{"detailed-issue": 2.0},
-			PageRank:          map[string]float64{"detailed-issue": 0.1},
-			InDegree:          map[string]int{"detailed-issue": 2},
-			OutDegree:         map[string]int{"detailed-issue": 1},
-		},
+		Stats: analysis.NewGraphStatsForTest(
+			map[string]float64{"detailed-issue": 0.1},  // pageRank
+			map[string]float64{"detailed-issue": 0.75}, // betweenness
+			map[string]float64{"detailed-issue": 0.5},  // eigenvector
+			map[string]float64{"detailed-issue": 1.0},  // hubs
+			map[string]float64{"detailed-issue": 2.0},  // authorities
+			map[string]float64{"detailed-issue": 3.0},  // criticalPathScore
+			map[string]int{"detailed-issue": 1},        // outDegree
+			map[string]int{"detailed-issue": 2},        // inDegree
+			nil, 0, nil,
+		),
 	}
 
 	m := ui.NewInsightsModel(ins, issueMap, theme)

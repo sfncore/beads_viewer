@@ -17,6 +17,7 @@ type IssueDelegate struct {
 	Theme             Theme
 	ShowPriorityHints bool
 	PriorityHints     map[string]*analysis.PriorityRecommendation
+	WorkspaceMode     bool // When true, shows repo prefix badges
 }
 
 func (d IssueDelegate) Height() int {
@@ -101,8 +102,16 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 	}
 
 	// Left side fixed columns with polished badges
-	// [selector 2] [icon 2] [prio-badge 3] [hint 1-2] [status-badge 6] [id dynamic] [space]
+	// [selector 2] [repo-badge 0-6] [icon 2] [prio-badge 3] [hint 1-2] [status-badge 6] [id dynamic] [space]
 	leftFixedWidth := 2 + 3 // selector + icon
+
+	// Repo badge width (workspace mode)
+	var repoBadge string
+	if d.WorkspaceMode && i.RepoPrefix != "" {
+		// Create a compact repo badge like [API] or [WEB]
+		repoBadge = RenderRepoBadge(i.RepoPrefix)
+		leftFixedWidth += lipgloss.Width(repoBadge) + 1
+	}
 
 	// Priority badge (polished)
 	prioBadge := RenderPriorityBadge(i.Issue.Priority)
@@ -158,6 +167,12 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 		leftSide.WriteString(t.Renderer.NewStyle().Foreground(t.Primary).Bold(true).Render("▸ "))
 	} else {
 		leftSide.WriteString("  ")
+	}
+
+	// Repo badge (workspace mode)
+	if repoBadge != "" {
+		leftSide.WriteString(repoBadge)
+		leftSide.WriteString(" ")
 	}
 
 	// Type icon with color

@@ -11,7 +11,15 @@ import (
 
 // FormatTimeRel returns a relative time string (e.g., "2h ago", "3d ago")
 func FormatTimeRel(t time.Time) string {
+	if t.IsZero() {
+		return "unknown"
+	}
+
 	d := time.Since(t)
+	if d < 0 {
+		// Future timestamps treated as now
+		return "now"
+	}
 	switch {
 	case d < time.Minute:
 		return "now"

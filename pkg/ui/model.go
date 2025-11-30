@@ -16,6 +16,7 @@ import (
 	"beads_viewer/pkg/model"
 	"beads_viewer/pkg/recipe"
 	"beads_viewer/pkg/updater"
+	"beads_viewer/pkg/watcher"
 
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/list"
@@ -55,6 +56,30 @@ type UpdateMsg struct {
 	URL     string
 }
 
+// Phase2ReadyMsg is sent when async graph analysis Phase 2 completes
+type Phase2ReadyMsg struct {
+	Stats *analysis.GraphStats // The stats that completed, to detect stale messages
+}
+
+// WaitForPhase2Cmd returns a command that waits for Phase 2 and sends Phase2ReadyMsg
+func WaitForPhase2Cmd(stats *analysis.GraphStats) tea.Cmd {
+	return func() tea.Msg {
+		stats.WaitForPhase2()
+		return Phase2ReadyMsg{Stats: stats}
+	}
+}
+
+// FileChangedMsg is sent when the beads file changes on disk
+type FileChangedMsg struct{}
+
+// WatchFileCmd returns a command that waits for file changes and sends FileChangedMsg
+func WatchFileCmd(w *watcher.Watcher) tea.Cmd {
+	return func() tea.Msg {
+		<-w.Changed()
+		return FileChangedMsg{}
+	}
+}
+
 // CheckUpdateCmd returns a command that checks for updates
 func CheckUpdateCmd() tea.Cmd {
 	return func() tea.Msg {
@@ -69,9 +94,12 @@ func CheckUpdateCmd() tea.Cmd {
 // Model is the main Bubble Tea model for the beads viewer
 type Model struct {
 	// Data
-	issues   []model.Issue
-	issueMap map[string]*model.Issue
-	analysis analysis.GraphStats
+	issues    []model.Issue
+	issueMap  map[string]*model.Issue
+	analyzer  *analysis.Analyzer
+	analysis  *analysis.GraphStats
+	beadsPath string           // Path to beads.jsonl for reloading
+	watcher   *watcher.Watcher // File watcher for live reload
 
 	// UI Components
 	list          list.Model
@@ -138,13 +166,29 @@ type Model struct {
 	// Status message (for temporary feedback)
 	statusMsg     string
 	statusIsError bool
+
+	// Workspace mode state
+	workspaceMode    bool            // True when viewing multiple repos
+	availableRepos   []string        // List of repo prefixes available
+	activeRepos      map[string]bool // Which repos are currently shown (nil = all)
+	workspaceSummary string          // Summary text for footer (e.g., "3 repos")
+}
+
+// WorkspaceInfo contains workspace loading metadata for TUI display
+type WorkspaceInfo struct {
+	Enabled      bool
+	RepoCount    int
+	FailedCount  int
+	TotalIssues  int
+	RepoPrefixes []string
 }
 
 // NewModel creates a new Model from the given issues
-func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe) Model {
-	// Graph Analysis (single pass for performance)
+// beadsPath is the path to the beads.jsonl file for live reload support
+func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath string) Model {
+	// Graph Analysis - Phase 1 is instant, Phase 2 runs in background
 	analyzer := analysis.NewAnalyzer(issues)
-	graphStats := analyzer.Analyze()
+	graphStats := analyzer.AnalyzeAsync()
 
 	// Sort issues
 	if activeRecipe != nil && activeRecipe.Sort.Field != "" {
@@ -161,9 +205,9 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe) Model {
 			case "updated", "updated_at":
 				less = issues[i].UpdatedAt.Before(issues[j].UpdatedAt)
 			case "impact":
-				less = graphStats.CriticalPathScore[issues[i].ID] < graphStats.CriticalPathScore[issues[j].ID]
+				less = graphStats.GetCriticalPathScore(issues[i].ID) < graphStats.GetCriticalPathScore(issues[j].ID)
 			case "pagerank":
-				less = graphStats.PageRank[issues[i].ID] < graphStats.PageRank[issues[j].ID]
+				less = graphStats.GetPageRankScore(issues[i].ID) < graphStats.GetPageRankScore(issues[j].ID)
 			default:
 				less = issues[i].Priority < issues[j].Priority
 			}
@@ -190,15 +234,16 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe) Model {
 	// Build lookup map
 	issueMap := make(map[string]*model.Issue, len(issues))
 
-	// Build list items with pre-computed graph scores
+	// Build list items - scores may be 0 until Phase 2 completes
 	items := make([]list.Item, len(issues))
 	for i := range issues {
 		issueMap[issues[i].ID] = &issues[i]
 
 		items[i] = IssueItem{
 			Issue:      issues[i],
-			GraphScore: graphStats.PageRank[issues[i].ID],
-			Impact:     graphStats.CriticalPathScore[issues[i].ID],
+			GraphScore: graphStats.GetPageRankScore(issues[i].ID),
+			Impact:     graphStats.GetCriticalPathScore(issues[i].ID),
+			RepoPrefix: ExtractRepoPrefix(issues[i].ID),
 		}
 	}
 
@@ -237,7 +282,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe) Model {
 	theme := DefaultTheme(lipgloss.NewRenderer(os.Stdout))
 
 	// List setup
-	delegate := IssueDelegate{Theme: theme}
+	delegate := IssueDelegate{Theme: theme, WorkspaceMode: false}
 	l := list.New(items, delegate, 0, 0)
 	l.Title = ""
 	l.SetShowTitle(false)
@@ -271,12 +316,9 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe) Model {
 	insightsPanel := NewInsightsModel(ins, issueMap, theme)
 	graphView := NewGraphModel(issues, &ins, theme)
 
-	// Generate priority recommendations for hints
-	recommendations := analyzer.GenerateRecommendations()
-	priorityHints := make(map[string]*analysis.PriorityRecommendation, len(recommendations))
-	for i := range recommendations {
-		priorityHints[recommendations[i].IssueID] = &recommendations[i]
-	}
+	// Priority hints are generated asynchronously when Phase 2 completes
+	// This avoids blocking startup on expensive graph analysis
+	priorityHints := make(map[string]*analysis.PriorityRecommendation)
 
 	// Initialize recipe loader
 	recipeLoader := recipe.NewLoader()
@@ -292,10 +334,37 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe) Model {
 	ti.PromptStyle = lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
 	ti.TextStyle = lipgloss.NewStyle().Foreground(theme.Base.GetForeground())
 
+	// Initialize file watcher for live reload
+	var fileWatcher *watcher.Watcher
+	var watcherErr error
+	if beadsPath != "" {
+		w, err := watcher.NewWatcher(beadsPath,
+			watcher.WithDebounceDuration(200*time.Millisecond),
+		)
+		if err != nil {
+			watcherErr = err
+		} else if err := w.Start(); err != nil {
+			watcherErr = err
+		} else {
+			fileWatcher = w
+		}
+	}
+
+	// Build initial status message if watcher failed
+	var initialStatus string
+	var initialStatusErr bool
+	if watcherErr != nil {
+		initialStatus = fmt.Sprintf("Live reload unavailable: %v", watcherErr)
+		initialStatusErr = true
+	}
+
 	return Model{
 		issues:            issues,
 		issueMap:          issueMap,
+		analyzer:          analyzer,
 		analysis:          graphStats,
+		beadsPath:         beadsPath,
+		watcher:           fileWatcher,
 		list:              l,
 		renderer:          renderer,
 		board:             board,
@@ -314,11 +383,17 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe) Model {
 		recipePicker:      recipePicker,
 		activeRecipe:      activeRecipe,
 		timeTravelInput:   ti,
+		statusMsg:         initialStatus,
+		statusIsError:     initialStatusErr,
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return CheckUpdateCmd()
+	cmds := []tea.Cmd{CheckUpdateCmd(), WaitForPhase2Cmd(m.analysis)}
+	if m.watcher != nil {
+		cmds = append(cmds, WatchFileCmd(m.watcher))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -330,6 +405,210 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateAvailable = true
 		m.updateTag = msg.TagName
 		m.updateURL = msg.URL
+
+	case Phase2ReadyMsg:
+		// Ignore stale Phase2 completions (from before a file reload)
+		if msg.Stats != m.analysis {
+			return m, nil
+		}
+		// Phase 2 analysis complete - regenerate insights with full data
+		ins := m.analysis.GenerateInsights(len(m.issues))
+		m.insightsPanel = NewInsightsModel(ins, m.issueMap, m.theme)
+		m.graphView = NewGraphModel(m.issues, &ins, m.theme)
+
+		// Generate priority recommendations now that Phase 2 is ready
+		recommendations := m.analyzer.GenerateRecommendations()
+		m.priorityHints = make(map[string]*analysis.PriorityRecommendation, len(recommendations))
+		for i := range recommendations {
+			m.priorityHints[recommendations[i].IssueID] = &recommendations[i]
+		}
+
+		// Re-sort issues if sorting by Phase 2 metrics (impact/pagerank)
+		if m.activeRecipe != nil {
+			switch m.activeRecipe.Sort.Field {
+			case "impact", "pagerank":
+				descending := m.activeRecipe.Sort.Direction == "desc"
+				sort.Slice(m.issues, func(i, j int) bool {
+					var less bool
+					if m.activeRecipe.Sort.Field == "impact" {
+						less = m.analysis.GetCriticalPathScore(m.issues[i].ID) < m.analysis.GetCriticalPathScore(m.issues[j].ID)
+					} else {
+						less = m.analysis.GetPageRankScore(m.issues[i].ID) < m.analysis.GetPageRankScore(m.issues[j].ID)
+					}
+					if descending {
+						return !less
+					}
+					return less
+				})
+				// Rebuild issueMap after re-sort (pointers become stale after sorting)
+				for i := range m.issues {
+					m.issueMap[m.issues[i].ID] = &m.issues[i]
+				}
+			}
+		}
+
+		// Re-apply recipe filter if active (to update scores while preserving filter)
+		// Otherwise, update list with all issues
+		if m.activeRecipe != nil {
+			m.applyRecipe(m.activeRecipe)
+		} else {
+			// Update list items with new scores (PageRank, Impact now available)
+			items := make([]list.Item, len(m.issues))
+			for i := range m.issues {
+				items[i] = IssueItem{
+					Issue:      m.issues[i],
+					GraphScore: m.analysis.GetPageRankScore(m.issues[i].ID),
+					Impact:     m.analysis.GetCriticalPathScore(m.issues[i].ID),
+					RepoPrefix: ExtractRepoPrefix(m.issues[i].ID),
+				}
+			}
+			m.list.SetItems(items)
+		}
+
+	case FileChangedMsg:
+		// File changed on disk - reload issues and recompute analysis
+		if m.beadsPath == "" {
+			// Re-start watch for next change
+			if m.watcher != nil {
+				cmds = append(cmds, WatchFileCmd(m.watcher))
+			}
+			return m, tea.Batch(cmds...)
+		}
+
+		// Exit time-travel mode if active (file changed, show current state)
+		if m.timeTravelMode {
+			m.timeTravelMode = false
+			m.timeTravelDiff = nil
+			m.timeTravelSince = ""
+			m.newIssueIDs = nil
+			m.closedIssueIDs = nil
+			m.modifiedIssueIDs = nil
+		}
+
+		// Reload issues from disk
+		newIssues, err := loader.LoadIssuesFromFile(m.beadsPath)
+		if err != nil {
+			m.statusMsg = fmt.Sprintf("Reload error: %v", err)
+			m.statusIsError = true
+			// Re-start watch for next change
+			if m.watcher != nil {
+				cmds = append(cmds, WatchFileCmd(m.watcher))
+			}
+			return m, tea.Batch(cmds...)
+		}
+
+		// Store selected issue ID to restore position after reload
+		var selectedID string
+		if sel := m.list.SelectedItem(); sel != nil {
+			if item, ok := sel.(IssueItem); ok {
+				selectedID = item.Issue.ID
+			}
+		}
+
+		// Apply default sorting (Open first, Priority, Date)
+		sort.Slice(newIssues, func(i, j int) bool {
+			iClosed := newIssues[i].Status == model.StatusClosed
+			jClosed := newIssues[j].Status == model.StatusClosed
+			if iClosed != jClosed {
+				return !iClosed
+			}
+			if newIssues[i].Priority != newIssues[j].Priority {
+				return newIssues[i].Priority < newIssues[j].Priority
+			}
+			return newIssues[i].CreatedAt.After(newIssues[j].CreatedAt)
+		})
+
+		// Recompute analysis (async Phase 1/Phase 2) with caching
+		m.issues = newIssues
+		cachedAnalyzer := analysis.NewCachedAnalyzer(newIssues, nil)
+		m.analyzer = cachedAnalyzer.Analyzer
+		m.analysis = cachedAnalyzer.AnalyzeAsync()
+		cacheHit := cachedAnalyzer.WasCacheHit()
+
+		// Rebuild lookup map
+		m.issueMap = make(map[string]*model.Issue, len(newIssues))
+		for i := range m.issues {
+			m.issueMap[m.issues[i].ID] = &m.issues[i]
+		}
+
+		// Clear stale priority hints (will be repopulated after Phase 2)
+		m.priorityHints = make(map[string]*analysis.PriorityRecommendation)
+
+		// Recompute stats
+		m.countOpen, m.countReady, m.countBlocked, m.countClosed = 0, 0, 0, 0
+		for i := range m.issues {
+			issue := &m.issues[i]
+			if issue.Status == model.StatusClosed {
+				m.countClosed++
+				continue
+			}
+			m.countOpen++
+			if issue.Status == model.StatusBlocked {
+				m.countBlocked++
+				continue
+			}
+			isBlocked := false
+			for _, dep := range issue.Dependencies {
+				if dep.Type != model.DepBlocks {
+					continue
+				}
+				if blocker, exists := m.issueMap[dep.DependsOnID]; exists && blocker.Status != model.StatusClosed {
+					isBlocked = true
+					break
+				}
+			}
+			if !isBlocked {
+				m.countReady++
+			}
+		}
+
+		// Rebuild list items
+		items := make([]list.Item, len(m.issues))
+		for i := range m.issues {
+			items[i] = IssueItem{
+				Issue:      m.issues[i],
+				GraphScore: m.analysis.GetPageRankScore(m.issues[i].ID),
+				Impact:     m.analysis.GetCriticalPathScore(m.issues[i].ID),
+				RepoPrefix: ExtractRepoPrefix(m.issues[i].ID),
+			}
+		}
+		m.list.SetItems(items)
+
+		// Restore selection position
+		if selectedID != "" {
+			for i, item := range m.list.Items() {
+				if issueItem, ok := item.(IssueItem); ok && issueItem.Issue.ID == selectedID {
+					m.list.Select(i)
+					break
+				}
+			}
+		}
+
+		// Regenerate sub-views (with Phase 1 data; Phase 2 will update via Phase2ReadyMsg)
+		ins := m.analysis.GenerateInsights(len(m.issues))
+		m.insightsPanel = NewInsightsModel(ins, m.issueMap, m.theme)
+		m.graphView = NewGraphModel(m.issues, &ins, m.theme)
+		m.board = NewBoardModel(m.issues, m.theme)
+
+		// Re-apply recipe filter if active
+		if m.activeRecipe != nil {
+			m.applyRecipe(m.activeRecipe)
+		}
+
+		if cacheHit {
+			m.statusMsg = fmt.Sprintf("Reloaded %d issues (cached)", len(newIssues))
+		} else {
+			m.statusMsg = fmt.Sprintf("Reloaded %d issues", len(newIssues))
+		}
+		m.statusIsError = false
+		m.updateViewportContent()
+
+		// Re-start watching for next change + wait for Phase 2
+		if m.watcher != nil {
+			cmds = append(cmds, WatchFileCmd(m.watcher))
+		}
+		cmds = append(cmds, WaitForPhase2Cmd(m.analysis))
+		return m, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
 		// Clear status message on any keypress
@@ -500,6 +779,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Theme:             m.theme,
 					ShowPriorityHints: m.showPriorityHints,
 					PriorityHints:     m.priorityHints,
+					WorkspaceMode:     m.workspaceMode,
 				})
 				return m, nil
 
@@ -654,6 +934,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Theme:             m.theme,
 			ShowPriorityHints: m.showPriorityHints,
 			PriorityHints:     m.priorityHints,
+			WorkspaceMode:     m.workspaceMode,
 		})
 
 		m.insightsPanel.SetSize(m.width, bodyHeight)
@@ -1446,6 +1727,19 @@ func (m *Model) renderFooter() string {
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
+	// WORKSPACE BADGE - Multi-repo mode indicator
+	// ─────────────────────────────────────────────────────────────────────────
+	workspaceSection := ""
+	if m.workspaceMode && m.workspaceSummary != "" {
+		workspaceStyle := lipgloss.NewStyle().
+			Background(lipgloss.Color("#45B7D1")).
+			Foreground(ColorBg).
+			Bold(true).
+			Padding(0, 1)
+		workspaceSection = workspaceStyle.Render(fmt.Sprintf("📦 %s", m.workspaceSummary))
+	}
+
+	// ─────────────────────────────────────────────────────────────────────────
 	// KEYBOARD HINTS - Context-aware navigation help
 	// ─────────────────────────────────────────────────────────────────────────
 	keyStyle := lipgloss.NewStyle().
@@ -1504,6 +1798,9 @@ func (m *Model) renderFooter() string {
 	if updateSection != "" {
 		leftWidth += lipgloss.Width(updateSection) + 1
 	}
+	if workspaceSection != "" {
+		leftWidth += lipgloss.Width(workspaceSection) + 1
+	}
 	rightWidth := lipgloss.Width(countBadge) + lipgloss.Width(keysSection)
 
 	remaining := m.width - leftWidth - rightWidth - 1
@@ -1515,6 +1812,9 @@ func (m *Model) renderFooter() string {
 	// Build the footer
 	var parts []string
 	parts = append(parts, filterBadge)
+	if workspaceSection != "" {
+		parts = append(parts, workspaceSection)
+	}
 	if updateSection != "" {
 		parts = append(parts, updateSection)
 	}
@@ -1573,9 +1873,10 @@ func (m *Model) applyFilter() {
 			// Use pre-computed graph scores (avoid redundant calculation)
 			filteredItems = append(filteredItems, IssueItem{
 				Issue:      issue,
-				GraphScore: m.analysis.PageRank[issue.ID],
-				Impact:     m.analysis.CriticalPathScore[issue.ID],
+				GraphScore: m.analysis.GetPageRankScore(issue.ID),
+				Impact:     m.analysis.GetCriticalPathScore(issue.ID),
 				DiffStatus: m.getDiffStatus(issue.ID),
+				RepoPrefix: ExtractRepoPrefix(issue.ID),
 			})
 			filteredIssues = append(filteredIssues, issue)
 		}
@@ -1583,7 +1884,9 @@ func (m *Model) applyFilter() {
 
 	m.list.SetItems(filteredItems)
 	m.board.SetIssues(filteredIssues)
-	m.graphView.SetIssues(filteredIssues, nil) // nil insights since we use pre-computed
+	// Generate insights for graph view (for metric rankings and sorting)
+	filterIns := m.analysis.GenerateInsights(len(filteredIssues))
+	m.graphView.SetIssues(filteredIssues, &filterIns)
 
 	// Keep selection in bounds
 	if len(filteredItems) > 0 && m.list.Index() >= len(filteredItems) {
@@ -1660,9 +1963,10 @@ func (m *Model) applyRecipe(r *recipe.Recipe) {
 		if include {
 			filteredItems = append(filteredItems, IssueItem{
 				Issue:      issue,
-				GraphScore: m.analysis.PageRank[issue.ID],
-				Impact:     m.analysis.CriticalPathScore[issue.ID],
+				GraphScore: m.analysis.GetPageRankScore(issue.ID),
+				Impact:     m.analysis.GetCriticalPathScore(issue.ID),
 				DiffStatus: m.getDiffStatus(issue.ID),
+				RepoPrefix: ExtractRepoPrefix(issue.ID),
 			})
 			filteredIssues = append(filteredIssues, issue)
 		}
@@ -1709,10 +2013,10 @@ func (m *Model) applyRecipe(r *recipe.Recipe) {
 				less = filteredIssues[i].UpdatedAt.Before(filteredIssues[j].UpdatedAt)
 			case "impact":
 				// Use analysis map for sort
-				less = m.analysis.CriticalPathScore[filteredIssues[i].ID] < m.analysis.CriticalPathScore[filteredIssues[j].ID]
+				less = m.analysis.GetCriticalPathScore(filteredIssues[i].ID) < m.analysis.GetCriticalPathScore(filteredIssues[j].ID)
 			case "pagerank":
 				// Use analysis map for sort
-				less = m.analysis.PageRank[filteredIssues[i].ID] < m.analysis.PageRank[filteredIssues[j].ID]
+				less = m.analysis.GetPageRankScore(filteredIssues[i].ID) < m.analysis.GetPageRankScore(filteredIssues[j].ID)
 			default:
 				less = filteredIssues[i].Priority < filteredIssues[j].Priority
 			}
@@ -1725,7 +2029,9 @@ func (m *Model) applyRecipe(r *recipe.Recipe) {
 
 	m.list.SetItems(filteredItems)
 	m.board.SetIssues(filteredIssues)
-	m.graphView.SetIssues(filteredIssues, nil)
+	// Generate insights for graph view (for metric rankings and sorting)
+	recipeIns := m.analysis.GenerateInsights(len(filteredIssues))
+	m.graphView.SetIssues(filteredIssues, &recipeIns)
 
 	// Update filter indicator
 	m.currentFilter = "recipe:" + r.Name
@@ -1771,13 +2077,13 @@ func (m *Model) updateViewportContent() {
 		item.CreatedAt.Format("2006-01-02"),
 	))
 
-	// Graph Analysis
-	pr := m.analysis.PageRank[item.ID]
-	bt := m.analysis.Betweenness[item.ID]
-	imp := m.analysis.CriticalPathScore[item.ID]
-	ev := m.analysis.Eigenvector[item.ID]
-	hub := m.analysis.Hubs[item.ID]
-	auth := m.analysis.Authorities[item.ID]
+	// Graph Analysis (using thread-safe accessors)
+	pr := m.analysis.GetPageRankScore(item.ID)
+	bt := m.analysis.GetBetweennessScore(item.ID)
+	imp := m.analysis.GetCriticalPathScore(item.ID)
+	ev := m.analysis.GetEigenvectorScore(item.ID)
+	hub := m.analysis.GetHubScore(item.ID)
+	auth := m.analysis.GetAuthorityScore(item.ID)
 
 	sb.WriteString("### Graph Analysis\n")
 	sb.WriteString(fmt.Sprintf("- **Impact Depth**: %.0f (downstream chain length)\n", imp))
@@ -1862,6 +2168,34 @@ func (m Model) FilteredIssues() []model.Issue {
 		}
 	}
 	return issues
+}
+
+// EnableWorkspaceMode configures the model for workspace (multi-repo) view
+func (m *Model) EnableWorkspaceMode(info WorkspaceInfo) {
+	m.workspaceMode = info.Enabled
+	m.availableRepos = info.RepoPrefixes
+	m.activeRepos = nil // nil means all repos are active
+
+	if info.RepoCount > 0 {
+		if info.FailedCount > 0 {
+			m.workspaceSummary = fmt.Sprintf("%d/%d repos", info.RepoCount-info.FailedCount, info.RepoCount)
+		} else {
+			m.workspaceSummary = fmt.Sprintf("%d repos", info.RepoCount)
+		}
+	}
+
+	// Update delegate to show repo badges
+	m.list.SetDelegate(IssueDelegate{
+		Theme:             m.theme,
+		ShowPriorityHints: m.showPriorityHints,
+		PriorityHints:     m.priorityHints,
+		WorkspaceMode:     m.workspaceMode,
+	})
+}
+
+// IsWorkspaceMode returns whether workspace mode is active
+func (m Model) IsWorkspaceMode() bool {
+	return m.workspaceMode
 }
 
 // enterTimeTravelMode loads historical data and computes diff
@@ -2191,4 +2525,12 @@ func (m *Model) openInEditor() {
 
 	m.statusMsg = fmt.Sprintf("📝 Opened in %s", filepath.Base(editor))
 	m.statusIsError = false
+}
+
+// Stop cleans up resources (file watcher, etc.)
+// Should be called when the program exits
+func (m *Model) Stop() {
+	if m.watcher != nil {
+		m.watcher.Stop()
+	}
 }

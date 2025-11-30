@@ -86,8 +86,8 @@ func (g *GraphModel) rebuildGraph() {
 	// Sort by critical path score if available, else by ID
 	if g.insights != nil && g.insights.Stats != nil {
 		sort.Slice(g.sortedIDs, func(i, j int) bool {
-			scoreI := g.insights.Stats.CriticalPathScore[g.sortedIDs[i]]
-			scoreJ := g.insights.Stats.CriticalPathScore[g.sortedIDs[j]]
+			scoreI := g.insights.Stats.GetCriticalPathScore(g.sortedIDs[i])
+			scoreJ := g.insights.Stats.GetCriticalPathScore(g.sortedIDs[j])
 			if scoreI != scoreJ {
 				return scoreI > scoreJ
 			}
@@ -159,12 +159,12 @@ func (g *GraphModel) computeRankings() {
 		return ranks
 	}
 
-	g.rankPageRank = computeFloatRanks(stats.PageRank)
-	g.rankBetweenness = computeFloatRanks(stats.Betweenness)
-	g.rankEigenvector = computeFloatRanks(stats.Eigenvector)
-	g.rankHubs = computeFloatRanks(stats.Hubs)
-	g.rankAuthorities = computeFloatRanks(stats.Authorities)
-	g.rankCriticalPath = computeFloatRanks(stats.CriticalPathScore)
+	g.rankPageRank = computeFloatRanks(stats.PageRank())
+	g.rankBetweenness = computeFloatRanks(stats.Betweenness())
+	g.rankEigenvector = computeFloatRanks(stats.Eigenvector())
+	g.rankHubs = computeFloatRanks(stats.Hubs())
+	g.rankAuthorities = computeFloatRanks(stats.Authorities())
+	g.rankCriticalPath = computeFloatRanks(stats.CriticalPathScore())
 	g.rankInDegree = computeIntRanks(stats.InDegree)
 	g.rankOutDegree = computeIntRanks(stats.OutDegree)
 }
@@ -665,13 +665,13 @@ func (g *GraphModel) renderMetricsPanel(id string, width int, t Theme) string {
 
 	stats := g.insights.Stats
 
-	// Get all values and ranks
-	pageRank := stats.PageRank[id]
-	betweenness := stats.Betweenness[id]
-	eigenvector := stats.Eigenvector[id]
-	hubs := stats.Hubs[id]
-	authorities := stats.Authorities[id]
-	critPath := stats.CriticalPathScore[id]
+	// Get all values and ranks (using thread-safe accessors for Phase 2 data)
+	pageRank := stats.GetPageRankScore(id)
+	betweenness := stats.GetBetweennessScore(id)
+	eigenvector := stats.GetEigenvectorScore(id)
+	hubs := stats.GetHubScore(id)
+	authorities := stats.GetAuthorityScore(id)
+	critPath := stats.GetCriticalPathScore(id)
 	inDeg := float64(stats.InDegree[id])
 	outDeg := float64(stats.OutDegree[id])
 
@@ -739,26 +739,26 @@ func (g *GraphModel) renderMetricsPanel(id string, width int, t Theme) string {
 		return nameStyle.Render(name) + " " + valueStyle.Render(valStr) + " " + bar + " " + rankBadge
 	}
 
-	// Find max values for normalization
+	// Find max values for normalization (using thread-safe accessors)
 	maxCP, maxPR, maxBW, maxEV := 0.0, 0.0, 0.0, 0.0
 	maxHub, maxAuth, maxIn, maxOut := 0.0, 0.0, 0.0, 0.0
 	for _, issueID := range g.sortedIDs {
-		if v := stats.CriticalPathScore[issueID]; v > maxCP {
+		if v := stats.GetCriticalPathScore(issueID); v > maxCP {
 			maxCP = v
 		}
-		if v := stats.PageRank[issueID]; v > maxPR {
+		if v := stats.GetPageRankScore(issueID); v > maxPR {
 			maxPR = v
 		}
-		if v := stats.Betweenness[issueID]; v > maxBW {
+		if v := stats.GetBetweennessScore(issueID); v > maxBW {
 			maxBW = v
 		}
-		if v := stats.Eigenvector[issueID]; v > maxEV {
+		if v := stats.GetEigenvectorScore(issueID); v > maxEV {
 			maxEV = v
 		}
-		if v := stats.Hubs[issueID]; v > maxHub {
+		if v := stats.GetHubScore(issueID); v > maxHub {
 			maxHub = v
 		}
-		if v := stats.Authorities[issueID]; v > maxAuth {
+		if v := stats.GetAuthorityScore(issueID); v > maxAuth {
 			maxAuth = v
 		}
 		if v := float64(stats.InDegree[issueID]); v > maxIn {
