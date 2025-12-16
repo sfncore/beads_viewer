@@ -185,3 +185,17 @@ func TestWizard_PrintSuccess_Local(t *testing.T) {
 	// Just verify it doesn't panic
 	wizard.PrintSuccess(result)
 }
+
+func TestWizard_PrintSuccess_Cloudflare(t *testing.T) {
+	wizard := NewWizard("/tmp/test")
+
+	result := &WizardResult{
+		BundlePath:        "/tmp/bundle",
+		CloudflareProject: "my-project",
+		CloudflareURL:     "https://my-project.pages.dev",
+		DeployTarget:      "cloudflare",
+	}
+
+	// Just verify it doesn't panic
+	wizard.PrintSuccess(result)
+}

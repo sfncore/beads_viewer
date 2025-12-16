@@ -29,6 +29,10 @@ type WizardConfig struct {
 	RepoPrivate     bool   `json:"repo_private,omitempty"`
 	RepoDescription string `json:"repo_description,omitempty"`
 
+	// Cloudflare options
+	CloudflareProject string `json:"cloudflare_project,omitempty"`
+	CloudflareBranch  string `json:"cloudflare_branch,omitempty"`
+
 	// Output path for bundle
 	OutputPath string `json:"output_path,omitempty"`
 }
@@ -39,6 +43,9 @@ type WizardResult struct {
 	RepoFullName string
 	PagesURL     string
 	DeployTarget string
+	// Cloudflare-specific
+	CloudflareProject string
+	CloudflareURL     string
 }
 
 // Wizard handles the interactive deployment flow.
@@ -102,7 +109,7 @@ func (w *Wizard) printBanner() {
 	fmt.Println("║  This wizard will:                                               ║")
 	fmt.Println("║    1. Export your issues to a static HTML bundle                 ║")
 	fmt.Println("║    2. Preview it locally                                         ║")
-	fmt.Println("║    3. Deploy to GitHub Pages (or export locally)                 ║")
+	fmt.Println("║    3. Deploy to GitHub Pages, Cloudflare Pages, or export only   ║")
 	fmt.Println("║                                                                  ║")
 	fmt.Println("║  Press Ctrl+C anytime to cancel                                  ║")
 	fmt.Println("╚══════════════════════════════════════════════════════════════════╝")
@@ -132,15 +139,18 @@ func (w *Wizard) collectDeployTarget() error {
 	fmt.Println("────────────────────────────")
 	fmt.Println("Where do you want to deploy?")
 	fmt.Println("  1. GitHub Pages (create/update repository)")
-	fmt.Println("  2. Export locally only")
+	fmt.Println("  2. Cloudflare Pages (requires wrangler CLI)")
+	fmt.Println("  3. Export locally only")
 	fmt.Println("")
 
-	choice := w.askChoice("Choice", []string{"1", "2"}, "1")
+	choice := w.askChoice("Choice", []string{"1", "2", "3"}, "1")
 
 	switch choice {
 	case "1":
 		w.config.DeployTarget = "github"
 	case "2":
+		w.config.DeployTarget = "cloudflare"
+	case "3":
 		w.config.DeployTarget = "local"
 	default:
 		w.config.DeployTarget = "github"
@@ -154,6 +164,8 @@ func (w *Wizard) collectTargetConfig() error {
 	switch w.config.DeployTarget {
 	case "github":
 		return w.collectGitHubConfig()
+	case "cloudflare":
+		return w.collectCloudflareConfig()
 	case "local":
 		return w.collectLocalConfig()
 	}
@@ -176,6 +188,24 @@ func (w *Wizard) collectGitHubConfig() error {
 	return nil
 }
 
+func (w *Wizard) collectCloudflareConfig() error {
+	fmt.Println("Step 3: Cloudflare Pages Configuration")
+	fmt.Println("────────────────────────────")
+
+	// Suggest project name based on bundle path or current directory
+	suggestedName := SuggestProjectName(w.beadsPath)
+	if suggestedName == "" {
+		cwd, _ := os.Getwd()
+		suggestedName = filepath.Base(cwd) + "-pages"
+	}
+
+	w.config.CloudflareProject = w.askString("Cloudflare Pages project name", suggestedName)
+	w.config.CloudflareBranch = w.askString("Branch name", "main")
+
+	fmt.Println("")
+	return nil
+}
+
 func (w *Wizard) collectLocalConfig() error {
 	fmt.Println("Step 3: Local Export Configuration")
 	fmt.Println("────────────────────────────")
@@ -192,7 +222,8 @@ func (w *Wizard) checkPrerequisites() error {
 	fmt.Println("Step 4: Prerequisites Check")
 	fmt.Println("────────────────────────────")
 
-	if w.config.DeployTarget == "github" {
+	switch w.config.DeployTarget {
+	case "github":
 		status, err := CheckGHStatus()
 		if err != nil {
 			return fmt.Errorf("failed to check GitHub status: %w", err)
@@ -234,6 +265,59 @@ func (w *Wizard) checkPrerequisites() error {
 			return fmt.Errorf("git identity not configured")
 		}
 		fmt.Printf("✓ Git configured (%s <%s>)\n", status.GitName, status.GitEmail)
+
+	case "cloudflare":
+		status, err := CheckWranglerStatus()
+		if err != nil {
+			return fmt.Errorf("failed to check wrangler status: %w", err)
+		}
+
+		// Check wrangler CLI
+		if !status.Installed {
+			fmt.Println("✗ wrangler CLI not installed")
+			if !status.NPMInstalled {
+				fmt.Println("  npm is required to install wrangler")
+				fmt.Println("  Download Node.js from: https://nodejs.org/")
+				return fmt.Errorf("npm is required to install wrangler CLI")
+			}
+			ShowWranglerInstallInstructions()
+			if w.askYesNo("Would you like to install wrangler now?", true) {
+				if err := AttemptWranglerInstall(); err != nil {
+					return fmt.Errorf("wrangler installation failed: %w", err)
+				}
+				// Re-check
+				status, _ = CheckWranglerStatus()
+				if !status.Installed {
+					return fmt.Errorf("wrangler installation failed")
+				}
+			} else {
+				return fmt.Errorf("wrangler CLI is required for Cloudflare Pages deployment")
+			}
+		}
+		fmt.Println("✓ wrangler CLI installed")
+
+		// Check authentication
+		if !status.Authenticated {
+			fmt.Println("✗ wrangler not authenticated")
+			fmt.Println("")
+			if w.askYesNo("Would you like to authenticate now?", true) {
+				if err := AuthenticateWrangler(); err != nil {
+					return fmt.Errorf("authentication failed: %w", err)
+				}
+				// Re-check
+				status, _ = CheckWranglerStatus()
+				if !status.Authenticated {
+					return fmt.Errorf("authentication failed")
+				}
+			} else {
+				return fmt.Errorf("Cloudflare authentication required")
+			}
+		}
+		if status.AccountName != "" {
+			fmt.Printf("✓ Authenticated (%s)\n", status.AccountName)
+		} else {
+			fmt.Println("✓ Authenticated with Cloudflare")
+		}
 	}
 
 	fmt.Println("")
@@ -329,6 +413,23 @@ func (w *Wizard) PerformDeploy() (*WizardResult, error) {
 		result.RepoFullName = deployResult.RepoFullName
 		result.PagesURL = deployResult.PagesURL
 
+	case "cloudflare":
+		deployConfig := CloudflareDeployConfig{
+			ProjectName:      w.config.CloudflareProject,
+			BundlePath:       w.bundlePath,
+			Branch:           w.config.CloudflareBranch,
+			SkipConfirmation: true, // Already confirmed in prerequisites
+		}
+
+		deployResult, err := DeployToCloudflarePages(deployConfig)
+		if err != nil {
+			return nil, fmt.Errorf("deployment failed: %w", err)
+		}
+
+		result.CloudflareProject = deployResult.ProjectName
+		result.CloudflareURL = deployResult.URL
+		result.PagesURL = deployResult.URL
+
 	case "local":
 		fmt.Printf("Bundle exported to: %s\n", w.bundlePath)
 		result.BundlePath = w.bundlePath
@@ -350,6 +451,11 @@ func (w *Wizard) PrintSuccess(result *WizardResult) {
 		fmt.Printf("║  Live site:  %-51s║\n", result.PagesURL)
 		fmt.Println("║                                                                  ║")
 		fmt.Println("║  Note: GitHub Pages may take 1-2 minutes to become available    ║")
+	case "cloudflare":
+		fmt.Printf("║  Project:    %-51s║\n", result.CloudflareProject)
+		fmt.Printf("║  Live site:  %-51s║\n", result.CloudflareURL)
+		fmt.Println("║                                                                  ║")
+		fmt.Println("║  Cloudflare Pages deploys are typically available immediately   ║")
 	case "local":
 		fmt.Printf("║  Bundle: %-56s║\n", result.BundlePath)
 		fmt.Println("║                                                                  ║")
