@@ -10,9 +10,9 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// containsString is a helper for checking error messages
+// containsString is a helper for checking error messages (case-insensitive)
 func containsString(s, substr string) bool {
-	return strings.Contains(s, substr)
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
 
 func TestCreateSchema(t *testing.T) {

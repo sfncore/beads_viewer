@@ -828,7 +828,7 @@ func (a *Analyzer) computePhase2WithProfile(stats *GraphStats, config AnalysisCo
 						// Panic -> implicitly causes timeout in parent
 					}
 				}()
-				cyclesDone <- topo.DirectedCyclesIn(a.g)
+				cyclesDone <- findCyclesSafe(a.g, maxCycles)
 			}()
 
 			timer := time.NewTimer(config.CyclesTimeout)
@@ -1118,7 +1118,7 @@ func (a *Analyzer) computePhase2(stats *GraphStats, config AnalysisConfig) {
 						// Panic -> implicitly causes timeout in parent
 					}
 				}()
-				cyclesDone <- topo.DirectedCyclesIn(a.g)
+				cyclesDone <- findCyclesSafe(a.g, maxCycles)
 			}()
 
 			timer := time.NewTimer(config.CyclesTimeout)

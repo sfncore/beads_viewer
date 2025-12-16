@@ -38,6 +38,10 @@ func RenderSparkline(val float64, width int) string {
 
 	if fullChars < width {
 		idx := int(remainder * float64(len(chars)))
+		// Ensure non-zero values are visible
+		if idx == 0 && remainder > 0 {
+			idx = 1
+		}
 		if idx >= len(chars) {
 			idx = len(chars) - 1
 		}

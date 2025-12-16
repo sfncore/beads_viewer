@@ -168,8 +168,12 @@ type Model struct {
 	width                 int
 	height                int
 	showLabelHealthDetail bool
+	showLabelDrilldown    bool
 	labelHealthDetail     *analysis.LabelHealth
 	labelHealthDetailFlow labelFlowSummary
+	labelDrilldownLabel   string
+	labelDrilldownIssues  []model.Issue
+	labelDrilldownCache   map[string][]model.Issue
 	labelHealthCached     bool
 	labelHealthCache      analysis.LabelAnalysisResult
 	attentionCached       bool
@@ -282,6 +286,30 @@ func (m Model) getCrossFlowsForLabel(label string) labelFlowSummary {
 		return out.Outgoing[i].Count > out.Outgoing[j].Count
 	})
 
+	return out
+}
+
+// filterIssuesByLabel returns issues that contain the given label (case-sensitive match)
+func (m Model) filterIssuesByLabel(label string) []model.Issue {
+	if m.labelDrilldownCache != nil {
+		if cached, ok := m.labelDrilldownCache[label]; ok {
+			return cached
+		}
+	}
+
+	var out []model.Issue
+	for _, iss := range m.issues {
+		for _, l := range iss.Labels {
+			if l == label {
+				out = append(out, iss)
+				break
+			}
+		}
+	}
+
+	if m.labelDrilldownCache != nil {
+		m.labelDrilldownCache[label] = out
+	}
 	return out
 }
 
@@ -512,39 +540,40 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 	}
 
 	return Model{
-		issues:            issues,
-		issueMap:          issueMap,
-		analyzer:          analyzer,
-		analysis:          graphStats,
-		beadsPath:         beadsPath,
-		watcher:           fileWatcher,
-		list:              l,
-		renderer:          renderer,
-		board:             board,
-		labelDashboard:    labelDashboard,
-		graphView:         graphView,
-		insightsPanel:     insightsPanel,
-		theme:             theme,
-		currentFilter:     "all",
-		focused:           focusList,
-		countOpen:         cOpen,
-		countReady:        cReady,
-		countBlocked:      cBlocked,
-		countClosed:       cClosed,
-		priorityHints:     priorityHints,
-		showPriorityHints: false, // Off by default, toggle with 'p'
-		triageScores:      triageScores,
-		triageReasons:     triageReasons,
-		unblocksMap:       unblocksMap,
-		quickWinSet:       quickWinSet,
-		blockerSet:        blockerSet,
-		recipeLoader:      recipeLoader,
-		recipePicker:      recipePicker,
-		activeRecipe:      activeRecipe,
-		timeTravelInput:   ti,
-		statusMsg:         initialStatus,
-		statusIsError:     initialStatusErr,
-		historyLoading:    len(issues) > 0, // Will be loaded in Init()
+		issues:              issues,
+		issueMap:            issueMap,
+		analyzer:            analyzer,
+		analysis:            graphStats,
+		beadsPath:           beadsPath,
+		watcher:             fileWatcher,
+		list:                l,
+		renderer:            renderer,
+		board:               board,
+		labelDashboard:      labelDashboard,
+		graphView:           graphView,
+		insightsPanel:       insightsPanel,
+		theme:               theme,
+		currentFilter:       "all",
+		focused:             focusList,
+		countOpen:           cOpen,
+		countReady:          cReady,
+		countBlocked:        cBlocked,
+		countClosed:         cClosed,
+		priorityHints:       priorityHints,
+		showPriorityHints:   false, // Off by default, toggle with 'p'
+		triageScores:        triageScores,
+		triageReasons:       triageReasons,
+		unblocksMap:         unblocksMap,
+		quickWinSet:         quickWinSet,
+		blockerSet:          blockerSet,
+		recipeLoader:        recipeLoader,
+		recipePicker:        recipePicker,
+		activeRecipe:        activeRecipe,
+		labelDrilldownCache: make(map[string][]model.Issue),
+		timeTravelInput:     ti,
+		statusMsg:           initialStatus,
+		statusIsError:       initialStatusErr,
+		historyLoading:      len(issues) > 0, // Will be loaded in Init()
 	}
 }
 
@@ -828,6 +857,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if s == "esc" || s == "q" || s == "enter" || s == "h" {
 				m.showLabelHealthDetail = false
 				m.labelHealthDetail = nil
+				return m, nil
+			}
+			if s == "d" && m.labelHealthDetail != nil {
+				// open drilldown from detail modal
+				m.labelDrilldownLabel = m.labelHealthDetail.Label
+				m.labelDrilldownIssues = m.filterIssuesByLabel(m.labelDrilldownLabel)
+				m.showLabelDrilldown = true
+				m.showLabelHealthDetail = false
+				return m, nil
+			}
+		}
+
+		// Close label drilldown modal if open
+		if m.showLabelDrilldown {
+			s := msg.String()
+			if s == "esc" || s == "q" || s == "enter" || s == "d" {
+				m.showLabelDrilldown = false
+				m.labelDrilldownLabel = ""
+				m.labelDrilldownIssues = nil
 				return m, nil
 			}
 		}
@@ -1140,6 +1188,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.labelHealthDetail = &lh
 						// Precompute cross-label flows for this label
 						m.labelHealthDetailFlow = m.getCrossFlowsForLabel(lh.Label)
+						return m, nil
+					}
+				}
+				// Open drilldown overlay on 'd'
+				if msg.String() == "d" && len(m.labelDashboard.labels) > 0 {
+					idx := m.labelDashboard.cursor
+					if idx >= 0 && idx < len(m.labelDashboard.labels) {
+						lh := m.labelDashboard.labels[idx]
+						m.labelDrilldownLabel = lh.Label
+						m.labelDrilldownIssues = m.filterIssuesByLabel(lh.Label)
+						m.showLabelDrilldown = true
 						return m, nil
 					}
 				}
@@ -1675,6 +1734,8 @@ func (m Model) View() string {
 		body = m.renderQuitConfirm()
 	} else if m.showLabelHealthDetail && m.labelHealthDetail != nil {
 		body = m.renderLabelHealthDetail(*m.labelHealthDetail)
+	} else if m.showLabelDrilldown && m.labelDrilldownLabel != "" {
+		body = m.renderLabelDrilldown()
 	} else if m.showTimeTravelPrompt {
 		body = m.renderTimeTravelPrompt()
 	} else if m.showRecipePicker {
@@ -2189,6 +2250,171 @@ func (m Model) renderLabelHealthDetail(lh analysis.LabelHealth) string {
 			sb.WriteString(out)
 			sb.WriteString("\n")
 		}
+	}
+
+	sb.WriteString(t.Renderer.NewStyle().Foreground(t.Secondary).Italic(true).Render("Press Esc to close"))
+
+	content := boxStyle.Render(sb.String())
+
+	return lipgloss.Place(
+		m.width,
+		m.height-1,
+		lipgloss.Center,
+		lipgloss.Center,
+		content,
+	)
+}
+
+// renderLabelDrilldown shows a compact drilldown for the selected label
+func (m Model) renderLabelDrilldown() string {
+	t := m.theme
+
+	boxStyle := t.Renderer.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.Primary).
+		Padding(1, 2).
+		Align(lipgloss.Left)
+
+	titleStyle := t.Renderer.NewStyle().
+		Foreground(t.Primary).
+		Bold(true)
+
+	labelStyle := t.Renderer.NewStyle().
+		Foreground(t.Base.GetForeground()).
+		Bold(true)
+
+	valStyle := t.Renderer.NewStyle().
+		Foreground(t.Base.GetForeground())
+
+	// Locate cached health for this label (if available)
+	var lh *analysis.LabelHealth
+	for i := range m.labelHealthCache.Labels {
+		if m.labelHealthCache.Labels[i].Label == m.labelDrilldownLabel {
+			lh = &m.labelHealthCache.Labels[i]
+			break
+		}
+	}
+
+	issues := m.labelDrilldownIssues
+	total := len(issues)
+	open, blocked, inProgress, closed := 0, 0, 0, 0
+	for _, is := range issues {
+		switch is.Status {
+		case model.StatusOpen:
+			open++
+		case model.StatusBlocked:
+			blocked++
+		case model.StatusInProgress:
+			inProgress++
+		case model.StatusClosed:
+			closed++
+		}
+	}
+
+	// Top issues by PageRank (fallback to ID sort)
+	type scored struct {
+		issue model.Issue
+		score float64
+	}
+	var scoredIssues []scored
+	for _, is := range issues {
+		scoredIssues = append(scoredIssues, scored{issue: is, score: m.analysis.GetPageRankScore(is.ID)})
+	}
+	sort.Slice(scoredIssues, func(i, j int) bool {
+		if scoredIssues[i].score == scoredIssues[j].score {
+			return scoredIssues[i].issue.ID < scoredIssues[j].issue.ID
+		}
+		return scoredIssues[i].score > scoredIssues[j].score
+	})
+	maxRows := m.height - 12
+	if maxRows < 3 {
+		maxRows = 3
+	}
+	if len(scoredIssues) > maxRows {
+		scoredIssues = scoredIssues[:maxRows]
+	}
+
+	bar := func(score int) string {
+		width := 20
+		fill := int(float64(width) * float64(score) / 100.0)
+		if fill < 0 {
+			fill = 0
+		}
+		if fill > width {
+			fill = width
+		}
+		filled := strings.Repeat("█", fill)
+		blank := strings.Repeat("░", width-fill)
+		style := t.Base
+		if lh != nil {
+			switch lh.HealthLevel {
+			case analysis.HealthLevelHealthy:
+				style = style.Foreground(t.Open)
+			case analysis.HealthLevelWarning:
+				style = style.Foreground(t.Feature)
+			default:
+				style = style.Foreground(t.Blocked)
+			}
+		}
+		return style.Render(filled + blank)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(titleStyle.Render(fmt.Sprintf("Label Drilldown: %s", m.labelDrilldownLabel)))
+	sb.WriteString("\n\n")
+
+	if lh != nil {
+		sb.WriteString(labelStyle.Render("Health: "))
+		sb.WriteString(valStyle.Render(fmt.Sprintf("%d/100 (%s)", lh.Health, lh.HealthLevel)))
+		sb.WriteString("\n")
+		sb.WriteString(bar(lh.Health))
+		sb.WriteString("\n\n")
+	}
+
+	sb.WriteString(labelStyle.Render("Issues: "))
+	sb.WriteString(valStyle.Render(fmt.Sprintf("%d total (open %d, blocked %d, in-progress %d, closed %d)", total, open, blocked, inProgress, closed)))
+	sb.WriteString("\n\n")
+
+	if len(scoredIssues) > 0 {
+		sb.WriteString(labelStyle.Render("Top issues by PageRank:"))
+		sb.WriteString("\n")
+		for _, si := range scoredIssues {
+			line := fmt.Sprintf("  %s  %-10s  PR=%.3f  %s", getStatusIcon(si.issue.Status), si.issue.ID, si.score, si.issue.Title)
+			sb.WriteString(valStyle.Render(line))
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	// Cross-label flows summary
+	flow := m.getCrossFlowsForLabel(m.labelDrilldownLabel)
+	if len(flow.Incoming) > 0 || len(flow.Outgoing) > 0 {
+		sb.WriteString(labelStyle.Render("Cross-label deps:"))
+		sb.WriteString("\n")
+		renderFlowList := func(title string, items []labelCount, arrow string) {
+			if len(items) == 0 {
+				return
+			}
+			sb.WriteString(valStyle.Render(title))
+			sb.WriteString("\n")
+			limit := len(items)
+			if limit > 5 {
+				limit = 5
+			}
+			for i := 0; i < limit; i++ {
+				lc := items[i]
+				line := fmt.Sprintf("  %s %-14s %3d", arrow, lc.Label, lc.Count)
+				sb.WriteString(valStyle.Render(line))
+				sb.WriteString("\n")
+			}
+			if len(items) > limit {
+				sb.WriteString(valStyle.Render(fmt.Sprintf("  … +%d more", len(items)-limit)))
+				sb.WriteString("\n")
+			}
+		}
+		renderFlowList("  Incoming", flow.Incoming, "←")
+		renderFlowList("  Outgoing", flow.Outgoing, "→")
+		sb.WriteString("\n")
 	}
 
 	sb.WriteString(t.Renderer.NewStyle().Foreground(t.Secondary).Italic(true).Render("Press Esc to close"))

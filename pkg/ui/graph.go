@@ -917,40 +917,6 @@ func smartTruncateID(id string, maxLen int) string {
 		return c == '_' || c == '-'
 	}
 	parts := strings.FieldsFunc(id, f)
-	// We need to reconstruct the separators to be accurate, but for abbreviation
-	// simple reconstruction might be acceptable or we just use the first char.
-	// Actually, just identifying parts is enough to abbreviate them.
-	// But wait, we need to know WHICH separator was used to reconstruct it?
-	// Abbreviation strategy: "coding_agent_session" -> "c_a_session"
-	// "coding-agent-session" -> "c-a-session"
-	
-	// Complex reconstruction is hard without keeping separators.
-	// Let's stick to the original logic but support hyphens if they are dominant?
-	// Or just try to abbreviate based on camelCase or separators?
-	
-	// Revised approach: iterate and keep separators
-	var abbrev strings.Builder
-	var currentPart strings.Builder
-	
-	for i, r := range id {
-		if r == '_' || r == '-' {
-			// End of part
-			part := currentPart.String()
-			if part != "" {
-				// Abbreviate previous part if not the last one (we don't know if last yet)
-				// Actually we can't look ahead easily.
-				// Let's just keep first char of every part except the last one?
-				// But we need to know if it IS the last one.
-			}
-			currentPart.Reset()
-			abbrev.WriteRune(r)
-		} else {
-			currentPart.WriteRune(r)
-		}
-	}
-	
-	// This is getting complicated to do perfectly in one pass without allocations.
-	// Let's stick to the existing split logic but support hyphens by checking which one is present.
 	
 	sep := "_"
 	if strings.Contains(id, "-") && !strings.Contains(id, "_") {

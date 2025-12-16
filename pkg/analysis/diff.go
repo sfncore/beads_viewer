@@ -422,8 +422,8 @@ func avgMapValue(m map[string]float64) float64 {
 	if len(m) == 0 {
 		return 0
 	}
-	
-	// Sort keys for deterministic summation order
+
+	// Sort keys for deterministic summation order (floats are not associative)
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)

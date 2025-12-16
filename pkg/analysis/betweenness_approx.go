@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"math/rand"
+	"sort"
 	"time"
 
 	"gonum.org/v1/gonum/graph"
@@ -66,6 +67,8 @@ func ApproxBetweenness(g *simple.DirectedGraph, sampleSize int, seed int64) Betw
 	start := time.Now()
 	nodes := graph.NodesOf(g.Nodes())
 	n := len(nodes)
+	// Ensure deterministic ordering before sampling; gonum's Nodes may be map-backed.
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID() < nodes[j].ID() })
 
 	result := BetweennessResult{
 		Scores:     make(map[int64]float64),
@@ -141,10 +144,10 @@ func singleSourceBetweenness(g *simple.DirectedGraph, source graph.Node, bc map[
 	nodes := graph.NodesOf(g.Nodes())
 
 	// Data structures for Brandes' algorithm
-	sigma := make(map[int64]float64)  // Number of shortest paths through node
-	dist := make(map[int64]int)       // Distance from source
-	delta := make(map[int64]float64)  // Dependency of source on node
-	pred := make(map[int64][]int64)   // Predecessors on shortest paths
+	sigma := make(map[int64]float64) // Number of shortest paths through node
+	dist := make(map[int64]int)      // Distance from source
+	delta := make(map[int64]float64) // Dependency of source on node
+	pred := make(map[int64][]int64)  // Predecessors on shortest paths
 
 	// Initialization
 	for _, n := range nodes {
@@ -160,7 +163,7 @@ func singleSourceBetweenness(g *simple.DirectedGraph, source graph.Node, bc map[
 
 	// Queue for BFS
 	queue := []int64{sourceID}
-	
+
 	// Stack for reverse traversal (accumulation)
 	var stack []int64
 
