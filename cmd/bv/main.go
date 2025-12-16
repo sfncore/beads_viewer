@@ -50,6 +50,11 @@ func main() {
 	robotLabelAttention := flag.Bool("robot-label-attention", false, "Output attention-ranked labels as JSON for AI agents")
 	attentionLimit := flag.Int("attention-limit", 5, "Limit number of labels in --robot-label-attention output")
 	robotAlerts := flag.Bool("robot-alerts", false, "Output alerts (drift + proactive) as JSON for AI agents")
+	// Graph export (bv-136)
+	robotGraph := flag.Bool("robot-graph", false, "Output dependency graph as JSON/DOT/Mermaid for AI agents")
+	graphFormat := flag.String("graph-format", "json", "Graph output format: json, dot, mermaid")
+	graphRoot := flag.String("graph-root", "", "Subgraph from specific root issue ID")
+	graphDepth := flag.Int("graph-depth", 0, "Max depth for subgraph (0 = unlimited)")
 	// Robot output filters (bv-84)
 	robotMinConf := flag.Float64("robot-min-confidence", 0.0, "Filter robot outputs by minimum confidence (0.0-1.0)")
 	robotMaxResults := flag.Int("robot-max-results", 0, "Limit robot output count (0 = use defaults)")
@@ -237,6 +242,19 @@ func main() {
 		fmt.Println("      Outputs drift + proactive alerts as JSON (staleness, cascades, density, cycles).")
 		fmt.Println("      Filters: --severity=<info|warning|critical>, --alert-type=<type>, --alert-label=<label>")
 		fmt.Println("      Fields: type, severity, message, issue_id, label, detected_at, details[].")
+		fmt.Println("")
+		fmt.Println("  --robot-graph [--graph-format=json|dot|mermaid] [--graph-root=ID] [--graph-depth=N]")
+		fmt.Println("      Outputs dependency graph in specified format (default: JSON adjacency).")
+		fmt.Println("      Formats:")
+		fmt.Println("        - json: Adjacency list with nodes[], edges[], metadata")
+		fmt.Println("        - dot: Graphviz DOT format (render with: dot -Tpng file.dot -o graph.png)")
+		fmt.Println("        - mermaid: Mermaid diagram format (paste into GitHub/markdown)")
+		fmt.Println("      Options:")
+		fmt.Println("        --label LABEL: Filter to issues with specific label")
+		fmt.Println("        --graph-root ID: Extract subgraph starting from root issue")
+		fmt.Println("        --graph-depth N: Limit subgraph depth (0 = unlimited)")
+		fmt.Println("      Fields: format, graph (string for dot/mermaid), nodes, edges, filters_applied, explanation")
+		fmt.Println("      Example: bv --robot-graph --graph-format=dot --label=api > api-deps.dot")
 		fmt.Println("")
 		fmt.Println("  --robot-insights")
 		fmt.Println("      Graph metrics JSON for agents.")
@@ -754,6 +772,45 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Handle --robot-graph (bv-136)
+	if *robotGraph {
+		analyzer := analysis.NewAnalyzer(issues)
+		stats := analyzer.Analyze()
+
+		// Determine format
+		var format export.GraphExportFormat
+		switch strings.ToLower(*graphFormat) {
+		case "dot":
+			format = export.GraphFormatDOT
+		case "mermaid":
+			format = export.GraphFormatMermaid
+		default:
+			format = export.GraphFormatJSON
+		}
+
+		config := export.GraphExportConfig{
+			Format:   format,
+			Label:    *labelScope,
+			Root:     *graphRoot,
+			Depth:    *graphDepth,
+			DataHash: dataHash,
+		}
+
+		result, err := export.ExportGraph(issues, &stats, config)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error exporting graph: %v\n", err)
+			os.Exit(1)
+		}
+
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(result); err != nil {
+			fmt.Fprintf(os.Stderr, "Error encoding graph: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	// Handle --robot-alerts (drift + proactive)
 	if *robotAlerts {
 		projectDir, _ := os.Getwd()
@@ -1044,27 +1101,27 @@ func main() {
 			cfg := analysis.FullAnalysisConfig()
 			analyzer.SetConfig(&cfg)
 		}
-		stats := analyzer.Analyze()
-		// Generate top 50 lists for summary, but full stats are included in the struct
-		insights := stats.GenerateInsights(50)
+			stats := analyzer.Analyze()
+			// Generate top 50 lists for summary, but full stats are included in the struct
+			insights := stats.GenerateInsights(50)
 
-		// Add project-level velocity snapshot (reuse triage computation for consistency)
-		if triage := analysis.ComputeTriage(issues); triage.ProjectHealth.Velocity != nil {
-			v := triage.ProjectHealth.Velocity
-			snap := &analysis.VelocitySnapshot{
-				Closed7:   v.ClosedLast7Days,
-				Closed30:  v.ClosedLast30Days,
-				AvgDays:   v.AvgDaysToClose,
-				Estimated: v.Estimated,
-			}
-			if len(v.Weekly) > 0 {
-				snap.Weekly = make([]int, len(v.Weekly))
-				for i := range v.Weekly {
-					snap.Weekly[i] = v.Weekly[i].Closed
+			// Add project-level velocity snapshot (reuse triage computation for consistency)
+			if triage := analysis.ComputeTriage(issues); triage.ProjectHealth.Velocity != nil {
+				v := triage.ProjectHealth.Velocity
+				snap := &analysis.VelocitySnapshot{
+					Closed7:   v.ClosedLast7Days,
+					Closed30:  v.ClosedLast30Days,
+					AvgDays:   v.AvgDaysToClose,
+					Estimated: v.Estimated,
 				}
+				if len(v.Weekly) > 0 {
+					snap.Weekly = make([]int, len(v.Weekly))
+					for i := range v.Weekly {
+						snap.Weekly[i] = v.Weekly[i].Closed
+					}
+				}
+				insights.Velocity = snap
 			}
-			insights.Velocity = snap
-		}
 
 		// Optional cap for metric maps to avoid overload
 		limitMaps := func(m map[string]float64, limit int) map[string]float64 {

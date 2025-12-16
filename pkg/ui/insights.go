@@ -375,6 +375,27 @@ func (m *InsightsModel) View() string {
 
 	t := m.theme
 
+	// Optional throughput summary
+	velocityLine := ""
+	if m.insights.Velocity != nil {
+		v := m.insights.Velocity
+		weekly := ""
+		if len(v.Weekly) > 0 {
+			limit := min(3, len(v.Weekly))
+			parts := make([]string, 0, limit)
+			for i := 0; i < limit; i++ {
+				parts = append(parts, fmt.Sprintf("%d", v.Weekly[i]))
+			}
+			weekly = fmt.Sprintf(" • weekly: [%s]", strings.Join(parts, ","))
+		}
+		estimate := ""
+		if v.Estimated {
+			estimate = " (estimated)"
+		}
+		velocityLine = t.Base.Render(fmt.Sprintf("Velocity: 7d=%d, 30d=%d, avg=%.1fd%s%s",
+			v.Closed7, v.Closed30, v.AvgDays, weekly, estimate))
+	}
+
 	// Calculate layout dimensions
 	mainWidth := m.width
 	detailWidth := 0
@@ -418,9 +439,16 @@ func (m *InsightsModel) View() string {
 	// Add detail panel if enabled
 	if detailWidth > 0 {
 		detailPanel := m.renderDetailPanel(detailWidth, m.height-2, t)
-		return lipgloss.JoinHorizontal(lipgloss.Top, mainContent, detailPanel)
+		view := lipgloss.JoinHorizontal(lipgloss.Top, mainContent, detailPanel)
+		if velocityLine != "" {
+			view = lipgloss.JoinVertical(lipgloss.Left, velocityLine, view)
+		}
+		return view
 	}
 
+	if velocityLine != "" {
+		return lipgloss.JoinVertical(lipgloss.Left, velocityLine, mainContent)
+	}
 	return mainContent
 }
 
@@ -893,8 +921,8 @@ func (m *InsightsModel) renderPriorityPanel(width, height int, t Theme) string {
 func (m *InsightsModel) renderPriorityItem(pick analysis.TopPick, width, height int, isSelected bool, t Theme) string {
 	itemStyle := t.Renderer.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		Width(width - 2).
-		Height(height - 1).
+		Width(width-2).
+		Height(height-1).
 		Padding(0, 1)
 
 	if isSelected {

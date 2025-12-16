@@ -1441,11 +1441,11 @@ func TestLabelOverrides(t *testing.T) {
 		t.Errorf("urgent label should have tighter thresholds, got warn=%d crit=%d", warn, crit)
 	}
 
-	// Issue with "low-priority" label gets looser thresholds only if they're lower
-	// But since 30 > 14, default is still used (we use the tightest thresholds)
+	// Issue with "low-priority" label gets looser thresholds if explicitly configured
+	// We want to allow relaxing thresholds for specific labels (e.g. icebox, backlog)
 	warn, crit, _ = cfg.GetStalenessThresholds([]string{"low-priority"})
-	if warn != 14 || crit != 30 {
-		t.Errorf("low-priority should not override with looser thresholds, got warn=%d crit=%d", warn, crit)
+	if warn != 30 || crit != 60 {
+		t.Errorf("low-priority should override with looser thresholds, got warn=%d crit=%d", warn, crit)
 	}
 
 	// Issue with multiple labels uses tightest (smallest) values
