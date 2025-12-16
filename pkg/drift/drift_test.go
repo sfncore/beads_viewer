@@ -1352,3 +1352,134 @@ func TestCheckBlocked_StrictThresholds(t *testing.T) {
 		})
 	}
 }
+
+// TestDisabledAlerts verifies that disabled alert types are not emitted (bv-167)
+func TestDisabledAlerts(t *testing.T) {
+	bl := &baseline.Baseline{
+		Stats: baseline.GraphStats{NodeCount: 10, EdgeCount: 15},
+	}
+	current := &baseline.Baseline{
+		Stats:  baseline.GraphStats{NodeCount: 10, EdgeCount: 15},
+		Cycles: [][]string{{"A", "B", "C", "A"}},
+	}
+
+	// Without disabling, we should get a cycle alert
+	cfg := DefaultConfig()
+	calc := NewCalculator(bl, current, cfg)
+	result := calc.Calculate()
+
+	hasCycleAlert := false
+	for _, a := range result.Alerts {
+		if a.Type == AlertNewCycle {
+			hasCycleAlert = true
+			break
+		}
+	}
+	if !hasCycleAlert {
+		t.Fatal("expected cycle alert without disabling")
+	}
+
+	// With disabled_alerts containing new_cycle, no cycle alert
+	cfg.DisabledAlerts = []string{"new_cycle"}
+	calc = NewCalculator(bl, current, cfg)
+	result = calc.Calculate()
+
+	for _, a := range result.Alerts {
+		if a.Type == AlertNewCycle {
+			t.Error("cycle alert should be disabled")
+		}
+	}
+}
+
+// TestIsAlertDisabled verifies the IsAlertDisabled helper (bv-167)
+func TestIsAlertDisabled(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.IsAlertDisabled("stale_issue") {
+		t.Error("stale_issue should not be disabled by default")
+	}
+
+	cfg.DisabledAlerts = []string{"stale_issue", "new_cycle"}
+	if !cfg.IsAlertDisabled("stale_issue") {
+		t.Error("stale_issue should be disabled")
+	}
+	if !cfg.IsAlertDisabled("new_cycle") {
+		t.Error("new_cycle should be disabled")
+	}
+	if cfg.IsAlertDisabled("density_growth") {
+		t.Error("density_growth should not be disabled")
+	}
+}
+
+// TestLabelOverrides verifies per-label threshold customization (bv-167)
+func TestLabelOverrides(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.StaleWarningDays = 14
+	cfg.StaleCriticalDays = 30
+	cfg.InProgressStaleMultiplier = 0.5
+
+	// Without overrides, defaults are returned
+	warn, crit, mult := cfg.GetStalenessThresholds([]string{"some-label"})
+	if warn != 14 || crit != 30 || mult != 0.5 {
+		t.Errorf("expected defaults without overrides, got warn=%d crit=%d mult=%f", warn, crit, mult)
+	}
+
+	// Add label overrides
+	cfg.LabelOverrides = map[string]*LabelConfig{
+		"urgent": {
+			StaleWarningDays:  3,
+			StaleCriticalDays: 7,
+		},
+		"low-priority": {
+			StaleWarningDays:  30,
+			StaleCriticalDays: 60,
+		},
+	}
+
+	// Issue with "urgent" label should get tighter thresholds
+	warn, crit, _ = cfg.GetStalenessThresholds([]string{"urgent"})
+	if warn != 3 || crit != 7 {
+		t.Errorf("urgent label should have tighter thresholds, got warn=%d crit=%d", warn, crit)
+	}
+
+	// Issue with "low-priority" label gets looser thresholds only if they're lower
+	// But since 30 > 14, default is still used (we use the tightest thresholds)
+	warn, crit, _ = cfg.GetStalenessThresholds([]string{"low-priority"})
+	if warn != 14 || crit != 30 {
+		t.Errorf("low-priority should not override with looser thresholds, got warn=%d crit=%d", warn, crit)
+	}
+
+	// Issue with multiple labels uses tightest (smallest) values
+	warn, crit, _ = cfg.GetStalenessThresholds([]string{"low-priority", "urgent"})
+	if warn != 3 || crit != 7 {
+		t.Errorf("multiple labels should use tightest, got warn=%d crit=%d", warn, crit)
+	}
+}
+
+// TestLabelOverridesValidation verifies validation of label overrides (bv-167)
+func TestLabelOverridesValidation(t *testing.T) {
+	cfg := DefaultConfig()
+
+	// Valid config
+	cfg.LabelOverrides = map[string]*LabelConfig{
+		"urgent": {StaleWarningDays: 3, StaleCriticalDays: 7},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid config should pass validation: %v", err)
+	}
+
+	// Invalid: critical < warning
+	cfg.LabelOverrides = map[string]*LabelConfig{
+		"broken": {StaleWarningDays: 10, StaleCriticalDays: 5},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("critical < warning should fail validation")
+	}
+
+	// Invalid: negative days
+	cfg.LabelOverrides = map[string]*LabelConfig{
+		"broken": {StaleWarningDays: -1},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("negative days should fail validation")
+	}
+}

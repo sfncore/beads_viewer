@@ -44,6 +44,24 @@ type Config struct {
 	// Blocking cascade thresholds
 	BlockingCascadeInfo    int `yaml:"blocking_cascade_info_threshold" json:"blocking_cascade_info_threshold"`
 	BlockingCascadeWarning int `yaml:"blocking_cascade_warning_threshold" json:"blocking_cascade_warning_threshold"`
+
+	// Alert type enable/disable flags (bv-167)
+	// Disabled alert types will not generate alerts
+	DisabledAlerts []string `yaml:"disabled_alerts,omitempty" json:"disabled_alerts,omitempty"`
+
+	// Per-label staleness overrides (bv-167)
+	// Labels can have tighter or looser thresholds than the default
+	LabelOverrides map[string]*LabelConfig `yaml:"label_overrides,omitempty" json:"label_overrides,omitempty"`
+}
+
+// LabelConfig allows per-label threshold customization (bv-167)
+type LabelConfig struct {
+	// StaleWarningDays overrides the default for issues with this label
+	StaleWarningDays int `yaml:"stale_warning_days,omitempty" json:"stale_warning_days,omitempty"`
+	// StaleCriticalDays overrides the default for issues with this label
+	StaleCriticalDays int `yaml:"stale_critical_days,omitempty" json:"stale_critical_days,omitempty"`
+	// InProgressStaleMultiplier overrides the default for this label
+	InProgressStaleMultiplier float64 `yaml:"in_progress_stale_multiplier,omitempty" json:"in_progress_stale_multiplier,omitempty"`
 }
 
 // DefaultConfig returns sensible default thresholds
@@ -183,7 +201,63 @@ func (c *Config) Validate() error {
 	if c.BlockingCascadeWarning < c.BlockingCascadeInfo {
 		return fmt.Errorf("blocking_cascade_warning_threshold must be >= blocking_cascade_info_threshold")
 	}
+	// Validate label overrides (bv-167)
+	for label, lc := range c.LabelOverrides {
+		if lc == nil {
+			continue
+		}
+		if lc.StaleWarningDays < 0 || lc.StaleCriticalDays < 0 {
+			return fmt.Errorf("label %q: stale days must be non-negative", label)
+		}
+		if lc.StaleWarningDays > 0 && lc.StaleCriticalDays > 0 && lc.StaleCriticalDays < lc.StaleWarningDays {
+			return fmt.Errorf("label %q: stale_critical_days must be >= stale_warning_days", label)
+		}
+		if lc.InProgressStaleMultiplier < 0 || lc.InProgressStaleMultiplier > 5 {
+			return fmt.Errorf("label %q: in_progress_stale_multiplier must be between 0 and 5", label)
+		}
+	}
 	return nil
+}
+
+// IsAlertDisabled returns true if the given alert type is in the disabled list (bv-167)
+func (c *Config) IsAlertDisabled(alertType string) bool {
+	for _, disabled := range c.DisabledAlerts {
+		if disabled == alertType {
+			return true
+		}
+	}
+	return false
+}
+
+// GetStalenessThresholds returns the staleness thresholds for an issue based on its labels (bv-167)
+// Returns warn days, critical days, and in-progress multiplier.
+// Uses the tightest (smallest) thresholds from all matching labels.
+func (c *Config) GetStalenessThresholds(labels []string) (warnDays, critDays int, inProgressMult float64) {
+	warnDays = c.StaleWarningDays
+	critDays = c.StaleCriticalDays
+	inProgressMult = c.InProgressStaleMultiplier
+
+	if len(c.LabelOverrides) == 0 {
+		return
+	}
+
+	// Check each label for overrides, using the tightest thresholds
+	for _, label := range labels {
+		lc, ok := c.LabelOverrides[label]
+		if !ok || lc == nil {
+			continue
+		}
+		if lc.StaleWarningDays > 0 && lc.StaleWarningDays < warnDays {
+			warnDays = lc.StaleWarningDays
+		}
+		if lc.StaleCriticalDays > 0 && lc.StaleCriticalDays < critDays {
+			critDays = lc.StaleCriticalDays
+		}
+		if lc.InProgressStaleMultiplier > 0 && lc.InProgressStaleMultiplier < inProgressMult {
+			inProgressMult = lc.InProgressStaleMultiplier
+		}
+	}
+	return
 }
 
 // ExampleConfig returns an example configuration with comments
@@ -215,5 +289,22 @@ in_progress_stale_multiplier: 0.5  # In-progress items age twice as fast
 # Blocking cascade thresholds (downstream items)
 blocking_cascade_info_threshold: 3   # Info alert if completing an issue unblocks 3+ items
 blocking_cascade_warning_threshold: 5 # Warning if unblocks 5+ items
+
+# Disable specific alert types (bv-167)
+# Uncomment to disable:
+# disabled_alerts:
+#   - stale_issue
+#   - new_cycle
+#   - blocking_cascade
+
+# Per-label staleness overrides (bv-167)
+# Use tighter thresholds for urgent/priority labels
+# label_overrides:
+#   urgent:
+#     stale_warning_days: 3
+#     stale_critical_days: 7
+#   low-priority:
+#     stale_warning_days: 30
+#     stale_critical_days: 60
 `
 }

@@ -146,6 +146,11 @@ func (c *Calculator) Calculate() *Result {
 
 // checkCycles detects new cycles that weren't in the baseline
 func (c *Calculator) checkCycles(result *Result) {
+	// Check if alert type is disabled (bv-167)
+	if c.config.IsAlertDisabled(string(AlertNewCycle)) {
+		return
+	}
+
 	baselineCycles := make(map[string]bool)
 	for _, cycle := range c.baseline.Cycles {
 		key := cycleKey(cycle)
@@ -181,6 +186,11 @@ func (c *Calculator) checkCycles(result *Result) {
 
 // checkDensity checks for significant density changes
 func (c *Calculator) checkDensity(result *Result) {
+	// Check if alert type is disabled (bv-167)
+	if c.config.IsAlertDisabled(string(AlertDensityGrowth)) {
+		return
+	}
+
 	blDensity := c.baseline.Stats.Density
 	curDensity := c.current.Stats.Density
 
@@ -216,11 +226,18 @@ func (c *Calculator) checkDensity(result *Result) {
 
 // checkGraphSize checks for significant node/edge count changes
 func (c *Calculator) checkGraphSize(result *Result) {
+	// Check if alert types are disabled (bv-167)
+	nodeDisabled := c.config.IsAlertDisabled(string(AlertNodeCountChange))
+	edgeDisabled := c.config.IsAlertDisabled(string(AlertEdgeCountChange))
+	if nodeDisabled && edgeDisabled {
+		return
+	}
+
 	blNodes := c.baseline.Stats.NodeCount
 	curNodes := c.current.Stats.NodeCount
 	nodeDelta := curNodes - blNodes
 
-	if blNodes > 0 {
+	if !nodeDisabled && blNodes > 0 {
 		nodePct := float64(nodeDelta) / float64(blNodes) * 100
 		if nodePct >= c.config.NodeGrowthInfoPct || nodePct <= -c.config.NodeGrowthInfoPct {
 			result.Alerts = append(result.Alerts, Alert{
@@ -239,7 +256,7 @@ func (c *Calculator) checkGraphSize(result *Result) {
 	curEdges := c.current.Stats.EdgeCount
 	edgeDelta := curEdges - blEdges
 
-	if blEdges > 0 {
+	if !edgeDisabled && blEdges > 0 {
 		edgePct := float64(edgeDelta) / float64(blEdges) * 100
 		if edgePct >= c.config.EdgeGrowthInfoPct || edgePct <= -c.config.EdgeGrowthInfoPct {
 			result.Alerts = append(result.Alerts, Alert{
@@ -257,6 +274,11 @@ func (c *Calculator) checkGraphSize(result *Result) {
 
 // checkBlocked checks for increases in blocked issues
 func (c *Calculator) checkBlocked(result *Result) {
+	// Check if alert type is disabled (bv-167)
+	if c.config.IsAlertDisabled(string(AlertBlockedIncrease)) {
+		return
+	}
+
 	blBlocked := c.baseline.Stats.BlockedCount
 	curBlocked := c.current.Stats.BlockedCount
 	delta := curBlocked - blBlocked
@@ -276,6 +298,11 @@ func (c *Calculator) checkBlocked(result *Result) {
 
 // checkActionable checks for significant changes in actionable issues
 func (c *Calculator) checkActionable(result *Result) {
+	// Check if alert type is disabled (bv-167)
+	if c.config.IsAlertDisabled(string(AlertActionableChange)) {
+		return
+	}
+
 	blAction := c.baseline.Stats.ActionableCount
 	curAction := c.current.Stats.ActionableCount
 	delta := curAction - blAction
@@ -308,6 +335,11 @@ func (c *Calculator) checkActionable(result *Result) {
 
 // checkPageRankChanges detects significant changes in top PageRank items
 func (c *Calculator) checkPageRankChanges(result *Result) {
+	// Check if alert type is disabled (bv-167)
+	if c.config.IsAlertDisabled(string(AlertPageRankChange)) {
+		return
+	}
+
 	blPR := make(map[string]float64)
 	for _, item := range c.baseline.TopMetrics.PageRank {
 		blPR[item.ID] = item.Value
@@ -355,7 +387,13 @@ func (c *Calculator) checkPageRankChanges(result *Result) {
 
 // checkStaleness emits alerts for issues that have been inactive beyond thresholds.
 // Relies on attached issues; no-op if issues were not provided.
+// Uses per-label threshold overrides when configured (bv-167).
 func (c *Calculator) checkStaleness(result *Result) {
+	// Check if alert type is disabled (bv-167)
+	if c.config.IsAlertDisabled(string(AlertStaleIssue)) {
+		return
+	}
+
 	if len(c.issues) == 0 {
 		return
 	}
@@ -364,12 +402,16 @@ func (c *Calculator) checkStaleness(result *Result) {
 		if issue.Status == model.StatusClosed || issue.UpdatedAt.IsZero() {
 			continue
 		}
-		warn := float64(c.config.StaleWarningDays)
-		crit := float64(c.config.StaleCriticalDays)
+
+		// Get label-specific thresholds (bv-167)
+		warnDays, critDays, inProgressMult := c.config.GetStalenessThresholds(issue.Labels)
+		warn := float64(warnDays)
+		crit := float64(critDays)
+
 		// Tighten thresholds for in-progress items
-		if issue.Status == model.StatusInProgress && c.config.InProgressStaleMultiplier > 0 {
-			warn *= c.config.InProgressStaleMultiplier
-			crit *= c.config.InProgressStaleMultiplier
+		if issue.Status == model.StatusInProgress && inProgressMult > 0 {
+			warn *= inProgressMult
+			crit *= inProgressMult
 		}
 
 		days := now.Sub(issue.UpdatedAt).Hours() / 24.0
@@ -401,6 +443,11 @@ func (c *Calculator) checkStaleness(result *Result) {
 // Uses existing dependency graph; no alert if issues not provided.
 // Includes urgency scoring via downstream priority sum (bv-165).
 func (c *Calculator) checkBlockingCascade(result *Result) {
+	// Check if alert type is disabled (bv-167)
+	if c.config.IsAlertDisabled(string(AlertBlockingCascade)) {
+		return
+	}
+
 	if len(c.issues) == 0 {
 		return
 	}
