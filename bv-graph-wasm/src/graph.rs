@@ -449,6 +449,55 @@ impl DiGraph {
         serde_wasm_bindgen::to_value(&nodes).unwrap_or(JsValue::NULL)
     }
 
+    /// Find k longest paths through the DAG.
+    /// Returns JSON: { paths: [{nodes, length}], total_nodes, max_length }
+    #[wasm_bindgen(js_name = kCriticalPaths)]
+    pub fn k_critical_paths(&self, k: usize) -> JsValue {
+        use crate::algorithms::k_paths::k_critical_paths;
+        let result = k_critical_paths(self, k);
+        serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    }
+
+    /// Find k longest paths with default k=5.
+    #[wasm_bindgen(js_name = kCriticalPathsDefault)]
+    pub fn k_critical_paths_default(&self) -> JsValue {
+        use crate::algorithms::k_paths::k_critical_paths_default;
+        let result = k_critical_paths_default(self);
+        serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    }
+
+    /// Find nodes that increase parallelization when completed.
+    /// Returns JSON: { items: [{node, parallel_gain, new_actionable}], open_nodes, current_actionable }
+    /// closed_set is an array of bytes where non-zero means closed.
+    #[wasm_bindgen(js_name = parallelCutSuggestions)]
+    pub fn parallel_cut_suggestions(&self, closed_set: &[u8], limit: usize) -> JsValue {
+        use crate::algorithms::parallel_cut::parallel_cut_suggestions;
+        let closed: Vec<bool> = closed_set.iter().map(|&b| b != 0).collect();
+        let result = parallel_cut_suggestions(self, &closed, limit);
+        serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    }
+
+    /// Find parallel cut suggestions with default limit of 10.
+    /// closed_set is an array of bytes where non-zero means closed.
+    #[wasm_bindgen(js_name = parallelCutDefault)]
+    pub fn parallel_cut_default(&self, closed_set: &[u8]) -> JsValue {
+        use crate::algorithms::parallel_cut::parallel_cut_default;
+        let closed: Vec<bool> = closed_set.iter().map(|&b| b != 0).collect();
+        let result = parallel_cut_default(self, &closed);
+        serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    }
+
+    /// Get nodes ranked by how many dependents they unblock.
+    /// Returns array of [node_index, unblock_count] pairs.
+    /// closed_set is an array of bytes where non-zero means closed.
+    #[wasm_bindgen(js_name = unblockRanking)]
+    pub fn unblock_ranking(&self, closed_set: &[u8], limit: usize) -> JsValue {
+        use crate::algorithms::parallel_cut::unblock_ranking;
+        let closed: Vec<bool> = closed_set.iter().map(|&b| b != 0).collect();
+        let result = unblock_ranking(self, &closed, limit);
+        serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
+    }
+
     /// Extract a subgraph containing only the specified node indices.
     /// Returns a new DiGraph with renumbered indices.
     #[wasm_bindgen(js_name = subgraph)]
