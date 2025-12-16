@@ -1565,3 +1565,32 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## 🤖 Robot JSON contract — quick cheat sheet
+
+**Shared across all robots**
+- `data_hash`: hash of the beads file driving the response (use to correlate multiple calls).
+- `analysis_config`: exact analysis settings (timeouts, modes, cycle caps) for reproducibility.
+- `status`: per-metric state `computed|approx|timeout|skipped` with elapsed ms/reason; always check before trusting heavy metrics like PageRank/Betweenness/HITS.
+
+**Schemas in 5 seconds (jq-friendly)**
+- `bv --robot-insights` → `.status`, `.analysis_config`, metric maps (capped by `BV_INSIGHTS_MAP_LIMIT`), `Bottlenecks`, `CriticalPath`, `Cycles`.
+- `bv --robot-plan` → `.plan.tracks[].items[].{id,unblocks}` for downstream unlocks; `.plan.summary.highest_impact`.
+- `bv --robot-priority` → `.recommendations[].{id,current_priority,suggested_priority,confidence,reasoning}`.
+- `bv --robot-diff --diff-since <ref>` → `{from_data_hash,to_data_hash,diff.summary,diff.new_issues,diff.cycle_*}`.
+- `bv --robot-history` → `.histories[ID].events` + `.commit_index` for reverse lookup; `.stats.method_distribution` shows how correlations were inferred.
+
+**Copy/paste guardrails**
+```bash
+# Ensure metrics are ready
+bv --robot-insights | jq '.status'
+
+# Top unblockers from plan
+bv --robot-plan | jq '.plan.tracks[].items[] | {id, unblocks}'
+
+# High-confidence priority fixes
+bv --robot-priority | jq '.recommendations[] | select(.confidence > 0.6)'
+
+# Verify diff hashes match expectations
+bv --robot-diff --diff-since HEAD~1 | jq '{from: .from_data_hash, to: .to_data_hash}'
+```
