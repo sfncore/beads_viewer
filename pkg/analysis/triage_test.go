@@ -184,8 +184,9 @@ func TestTriageRecommendation_Action(t *testing.T) {
 	}
 
 	rec := triage.Recommendations[0]
-	if rec.Action != "review" {
-		t.Errorf("expected action 'review' for stale in_progress, got %s", rec.Action)
+	expectedAction := "Check if this is stuck and needs help"
+	if rec.Action != expectedAction {
+		t.Errorf("expected action '%s' for stale in_progress, got %s", expectedAction, rec.Action)
 	}
 }
 
@@ -311,9 +312,9 @@ func TestTriageInProgressAction(t *testing.T) {
 		daysOld        int
 		expectedAction string
 	}{
-		{"fresh in_progress", 5, "work"},       // < 9 days (0.3 * 30)
-		{"moderate in_progress", 12, "review"}, // > 9 days, < 15 days
-		{"stale in_progress", 20, "review"},    // > 15 days (0.5 * 30)
+		{"fresh in_progress", 5, "Start work on this issue"},            // < 9 days
+		{"moderate in_progress", 12, "Start work on this issue"},        // > 9 days, < 14 days (new threshold)
+		{"stale in_progress", 20, "Check if this is stuck and needs help"}, // > 14 days
 	}
 
 	for _, tt := range tests {
