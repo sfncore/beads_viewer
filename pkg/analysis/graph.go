@@ -506,6 +506,9 @@ func (a *Analyzer) AnalyzeAsyncWithConfig(ctx context.Context, config AnalysisCo
 			HITS:        statusEntry{State: "pending"},
 			Critical:    statusEntry{State: "pending"},
 			Cycles:      statusEntry{State: "pending"},
+			KCore:       statusEntry{State: "pending"},
+			Articulation: statusEntry{State: "pending"},
+			Slack:       statusEntry{State: "pending"},
 		},
 	}
 

@@ -68,7 +68,7 @@ func findOneCycleInSCC(g graph.Directed, scc []graph.Node) []graph.Node {
 	}
 
 	// Pre-compute and sort adjacency lists for nodes in SCC
-	// This avoids repeated filtering and sorting during recursion
+	// This avoids repeated filtering and sorting during traversal
 	adj := make(map[int64][]graph.Node, len(scc))
 	for _, u := range scc {
 		to := g.To(u.ID())
@@ -85,53 +85,63 @@ func findOneCycleInSCC(g graph.Directed, scc []graph.Node) []graph.Node {
 		adj[u.ID()] = neighbors
 	}
 
-	// DFS state
+	// Iterative DFS state
 	visited := make(map[int64]bool)
-	stack := make([]graph.Node, 0)
 	onStack := make(map[int64]bool)
+	stack := []graph.Node{}
+	
+	// Track neighbor index for each node on stack to resume iteration
+	neighborIndex := make(map[int64]int)
 
-	var dfs func(u graph.Node) []graph.Node
-	dfs = func(u graph.Node) []graph.Node {
-		visited[u.ID()] = true
-		stack = append(stack, u)
-		onStack[u.ID()] = true
+	if len(scc) > 0 {
+		stack = append(stack, scc[0])
+	}
 
-		// Iterate pre-sorted neighbors
-		for _, v := range adj[u.ID()] {
+	for len(stack) > 0 {
+		u := stack[len(stack)-1] // Peek
+		uID := u.ID()
+
+		if !visited[uID] {
+			visited[uID] = true
+			onStack[uID] = true
+		}
+
+		// Get neighbors
+		neighbors := adj[uID]
+		idx := neighborIndex[uID]
+
+		if idx < len(neighbors) {
+			v := neighbors[idx]
+			neighborIndex[uID]++ // Advance for next iteration
+
 			if onStack[v.ID()] {
 				// Cycle found! Reconstruct path from v to u then close with v
 				var cycle []graph.Node
 				// Find index of v in stack
-				idx := -1
+				stackIdx := -1
 				for i, n := range stack {
 					if n.ID() == v.ID() {
-						idx = i
+						stackIdx = i
 						break
 					}
 				}
-				if idx != -1 {
-					cycle = append(cycle, stack[idx:]...)
+				if stackIdx != -1 {
+					cycle = append(cycle, stack[stackIdx:]...)
 					cycle = append(cycle, v) // Close the loop
 					return cycle
 				}
 			}
 
 			if !visited[v.ID()] {
-				if res := dfs(v); res != nil {
-					return res
-				}
+				stack = append(stack, v)
 			}
+		} else {
+			// All neighbors visited, backtrack
+			onStack[uID] = false
+			stack = stack[:len(stack)-1]
+			delete(neighborIndex, uID)
 		}
-
-		// Backtrack
-		stack = stack[:len(stack)-1]
-		onStack[u.ID()] = false
-		return nil
 	}
 
-	// Start DFS from the first node in SCC (guaranteed to be part of at least one cycle in a non-trivial SCC)
-	if len(scc) > 0 {
-		return dfs(scc[0])
-	}
 	return nil
 }
