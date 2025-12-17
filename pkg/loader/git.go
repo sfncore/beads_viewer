@@ -205,10 +205,9 @@ func parseDateString(s string) (time.Time, bool) {
 // loadFromGit loads issues from a specific commit SHA
 func (g *GitLoader) loadFromGit(sha string) ([]model.Issue, error) {
 	// Try known beads file paths in order, matching loader.go precedence
-	paths := []string{
-		".beads/issues.jsonl",
-		".beads/beads.jsonl",
-		".beads/beads.base.jsonl",
+	var paths []string
+	for _, name := range PreferredJSONLNames {
+		paths = append(paths, fmt.Sprintf(".beads/%s", name))
 	}
 
 	var lastErr error

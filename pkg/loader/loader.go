@@ -16,6 +16,9 @@ import (
 // BeadsDirEnvVar is the name of the environment variable for custom beads directory
 const BeadsDirEnvVar = "BEADS_DIR"
 
+// PreferredJSONLNames defines the priority order for looking up beads data files.
+var PreferredJSONLNames = []string{"issues.jsonl", "beads.jsonl", "beads.base.jsonl"}
+
 // GetBeadsDir returns the beads directory path, respecting BEADS_DIR env var.
 // If BEADS_DIR is set, it is used directly.
 // Otherwise, falls back to .beads in the given repoPath (or cwd if empty).
@@ -98,7 +101,7 @@ func FindJSONLPathWithWarnings(beadsDir string, warnFunc func(msg string)) (stri
 	// 2. beads.jsonl (backward compatibility)
 	// 3. beads.base.jsonl (fallback, may be present during merge resolution)
 	// 4. First candidate
-	preferredNames := []string{"issues.jsonl", "beads.jsonl", "beads.base.jsonl"}
+	preferredNames := PreferredJSONLNames
 
 	for _, preferred := range preferredNames {
 		for _, name := range candidates {
@@ -224,7 +227,7 @@ func ParseIssuesWithOptions(r io.Reader, opts ParseOptions) ([]model.Issue, erro
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("error reading issues stream: %w", err)
+		return nil, fmt.Errorf("error reading issues stream at line %d: %w", lineNum, err)
 	}
 
 	return issues, nil

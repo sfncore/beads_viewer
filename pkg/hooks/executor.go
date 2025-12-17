@@ -123,7 +123,8 @@ func (e *Executor) runHook(hook Hook, phase HookPhase) HookResult {
 
 	for _, key := range envKeys {
 		value := hook.Env[key]
-		expandedValue := os.ExpandEnv(value)
+		// Use custom expansion that sees both OS env and context variables
+		expandedValue := expandEnv(value, cmd.Env)
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, expandedValue))
 	}
 
@@ -150,6 +151,20 @@ func (e *Executor) runHook(hook Hook, phase HookPhase) HookResult {
 	}
 
 	return result
+}
+
+// expandEnv replaces ${VAR} or $VAR in the string using values from the env slice
+func expandEnv(s string, env []string) string {
+	return os.Expand(s, func(key string) string {
+		// Search env slice from end to beginning (to respect precedence if duplicates exist)
+		prefix := key + "="
+		for i := len(env) - 1; i >= 0; i-- {
+			if strings.HasPrefix(env[i], prefix) {
+				return env[i][len(prefix):]
+			}
+		}
+		return ""
+	})
 }
 
 // Results returns all hook execution results
