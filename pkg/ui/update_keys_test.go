@@ -76,27 +76,27 @@ func TestHistoryViewToggle(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
 	m = updated.(Model)
 
-	// H should toggle history view on
+	// h should toggle history view on
 	if m.isHistoryView {
 		t.Fatalf("history view should be off initially")
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("H")})
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
 	m = updated.(Model)
 
 	if !m.isHistoryView {
-		t.Fatalf("expected history view to be on after H key")
+		t.Fatalf("expected history view to be on after h key")
 	}
 	if m.focused != focusHistory {
 		t.Fatalf("expected focus to be on history, got %v", m.focused)
 	}
 
-	// H again should toggle off
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("H")})
+	// h again should toggle off
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
 	m = updated.(Model)
 
 	if m.isHistoryView {
-		t.Fatalf("expected history view to be off after second H key")
+		t.Fatalf("expected history view to be off after second h key")
 	}
 	if m.focused != focusList {
 		t.Fatalf("expected focus to be back on list, got %v", m.focused)
@@ -114,7 +114,7 @@ func TestHistoryViewKeys(t *testing.T) {
 	m = updated.(Model)
 
 	// Enter history view
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("H")})
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
 	m = updated.(Model)
 
 	// Esc should close history view
@@ -126,7 +126,7 @@ func TestHistoryViewKeys(t *testing.T) {
 	}
 
 	// Re-enter and test 'c' key cycles confidence
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("H")})
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
 	m = updated.(Model)
 
 	initialConf := m.historyView.GetMinConfidence()

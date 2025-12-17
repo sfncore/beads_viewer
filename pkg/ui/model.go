@@ -68,6 +68,7 @@ const (
 	SortCreatedDesc                 // By creation date, newest first
 	SortPriority                    // By priority only (ascending)
 	SortUpdated                     // By last update, newest first
+	numSortModes                    // Keep this last - used for cycling
 )
 
 // String returns a human-readable label for the sort mode
@@ -990,8 +991,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				RepoPrefix: ExtractRepoPrefix(m.issues[i].ID),
 			}
 		}
-		m.list.SetItems(items)
 		m.updateSemanticIDs(items)
+		m.list.SetItems(items)
 
 		// Restore selection position
 		if selectedID != "" {
@@ -1514,7 +1515,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				})
 				return m, nil
 
-			case "H":
+			case "h":
 				// Toggle history view
 				m.clearAttentionOverlay()
 				m.isHistoryView = !m.isHistoryView
@@ -1534,7 +1535,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 
-			case "L":
+			case "f3":
 				// Open label dashboard (phase 1: table view)
 				m.clearAttentionOverlay()
 				m.isGraphView = false
@@ -1553,7 +1554,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusIsError = false
 				return m, nil
 
-			case "A":
+			case "f4":
 				// Attention view: compute attention scores (cached) and render as text
 				if !m.attentionCached {
 					cfg := analysis.DefaultLabelHealthConfig()
@@ -1576,7 +1577,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.insightsPanel.SetSize(m.width, panelHeight)
 				return m, nil
 
-			case "F":
+			case "f":
 				// Flow matrix view (cross-label dependencies)
 				m.clearAttentionOverlay()
 				cfg := analysis.DefaultLabelHealthConfig()
@@ -1614,7 +1615,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 
-			case "R":
+			case "f5":
 				// Toggle recipe picker overlay
 				m.showRecipePicker = !m.showRecipePicker
 				if m.showRecipePicker {
@@ -1643,7 +1644,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 
-			case "E":
+			case "x":
 				// Export to Markdown file
 				m.exportToMarkdown()
 				return m, nil
@@ -1923,7 +1924,7 @@ func (m Model) handleGraphKeys(msg tea.KeyMsg) Model {
 		m.graphView.PageUp()
 	case "H":
 		m.graphView.ScrollLeft()
-	case "L":
+	case "f3":
 		m.graphView.ScrollRight()
 	case "enter":
 		if selected := m.graphView.SelectedIssue(); selected != nil {
@@ -2043,7 +2044,7 @@ func (m Model) handleHistoryKeys(msg tea.KeyMsg) Model {
 		// Toggle author filter (simple toggle for now)
 		m.statusMsg = "💡 Author filter: Use 'c' to cycle confidence thresholds"
 		m.statusIsError = false
-	case "H", "esc":
+	case "h", "esc":
 		// Exit history view
 		m.isHistoryView = false
 		m.focused = focusList
@@ -2158,8 +2159,8 @@ func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 	case "x":
 		// Toggle calculation details
 		m.insightsPanel.ToggleCalculation()
-	case "H":
-		// Toggle heatmap view (bv-95)
+	case "m":
+		// Toggle heatmap view (bv-95) - "m" for heatMap
 		m.insightsPanel.ToggleHeatmap()
 	case "enter":
 		// Jump to selected issue in list view
@@ -2254,7 +2255,7 @@ func (m Model) handleListKeys(msg tea.KeyMsg) Model {
 	case "O":
 		// Open beads.jsonl in editor
 		m.openInEditor()
-	case "H":
+	case "h":
 		// Toggle history view
 		if !m.isHistoryView {
 			m.enterHistoryView()
@@ -2267,8 +2268,7 @@ func (m Model) handleListKeys(msg tea.KeyMsg) Model {
 		}
 	case "s":
 		// Cycle sort mode (bv-3ita)
-		m.sortMode = (m.sortMode + 1) % 5 // 5 sort modes total
-		m.applyFilter()                    // Re-apply filter with new sort
+		m.cycleSortMode()
 	}
 	return m
 }
@@ -2658,12 +2658,11 @@ func (m *Model) renderHelpOverlay() string {
 		{"a", "Toggle Actionable view"},
 		{"b", "Toggle Kanban board"},
 		{"g", "Toggle Graph view"},
-		{"H", "Toggle History view"},
+		{"h", "Toggle History view"},
 		{"i", "Toggle Insights dashboard"},
-		{"L", "Toggle Label dashboard"},
-		{"A", "Toggle Attention view"},
-		{"F", "Toggle Flow matrix"},
-		{"P", "Toggle Sprint dashboard"},
+		{"L", "Label dashboard (L=Labels)"},
+		{"A", "Attention view (A=Attention)"},
+		{"f", "Toggle Flow matrix"},
 		{"R", "Open Recipe picker"},
 		{"w", "Repo filter (workspace mode)"},
 		{"? / F1", "Toggle this help"},
@@ -3756,8 +3755,8 @@ func (m *Model) applyFilter() {
 
 // cycleSortMode cycles through available sort modes (bv-3ita)
 func (m *Model) cycleSortMode() {
-	m.sortMode = (m.sortMode + 1) % 5 // 5 sort modes total
-	m.applyFilter()                    // Re-apply filter with new sort
+	m.sortMode = (m.sortMode + 1) % numSortModes
+	m.applyFilter() // Re-apply filter with new sort
 }
 
 // sortFilteredItems sorts the filtered items based on current sortMode (bv-3ita)
