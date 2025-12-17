@@ -210,11 +210,24 @@ func CreateMaterializedViews(db *sql.DB) error {
 			COALESCE(m.triage_score, 0) as triage_score,
 			COALESCE(m.blocks_count, 0) as blocks_count,
 			COALESCE(m.blocked_by_count, 0) as blocked_by_count,
-			(SELECT GROUP_CONCAT(depends_on_id) FROM dependencies WHERE issue_id = i.id AND type = 'blocks') as blocks_ids,
-			(SELECT GROUP_CONCAT(issue_id) FROM dependencies WHERE depends_on_id = i.id AND type = 'blocks') as blocked_by_ids
-		FROM issues i
-		LEFT JOIN issue_metrics m ON i.id = m.issue_id
-	`
+				-- dep.IssueID depends on dep.DependsOnID, so:
+				-- - blocks_ids are the issues that depend on i (downstream)
+				-- - blocked_by_ids are the issues i depends on (upstream)
+				(SELECT GROUP_CONCAT(issue_id) FROM (
+					SELECT issue_id
+					FROM dependencies
+					WHERE depends_on_id = i.id AND (type = 'blocks' OR type = '')
+					ORDER BY issue_id
+				)) as blocks_ids,
+				(SELECT GROUP_CONCAT(depends_on_id) FROM (
+					SELECT depends_on_id
+					FROM dependencies
+					WHERE issue_id = i.id AND (type = 'blocks' OR type = '')
+					ORDER BY depends_on_id
+				)) as blocked_by_ids
+			FROM issues i
+			LEFT JOIN issue_metrics m ON i.id = m.issue_id
+		`
 	if _, err := db.Exec(overviewSQL); err != nil {
 		return fmt.Errorf("create issue_overview_mv: %w", err)
 	}

@@ -259,6 +259,7 @@ func SuggestProjectName(bundlePath string) string {
 	name = strings.ToLower(name)
 	name = strings.ReplaceAll(name, " ", "-")
 	name = strings.ReplaceAll(name, "_", "-")
+	name = strings.ReplaceAll(name, ".", "-") // Convert dots to hyphens to separate words
 
 	// Remove any characters that aren't alphanumeric or hyphens
 	name = cfNonAlphanumRegex.ReplaceAllString(name, "")
