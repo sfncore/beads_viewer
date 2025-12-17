@@ -76,6 +76,9 @@ func DetectCycleWarnings(issues []model.Issue, config CycleWarningConfig) []Sugg
 		// Determine confidence based on cycle length
 		// Shorter cycles are more problematic (higher confidence)
 		confidence := 1.0 - (float64(cycleLen-2) * 0.1)
+		if confidence > 1.0 {
+			confidence = 1.0 // Cap at 1.0 for self-loops (cycleLen=1)
+		}
 		if confidence < 0.5 {
 			confidence = 0.5
 		}
