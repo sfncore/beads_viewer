@@ -2,6 +2,7 @@
 package correlation
 
 import (
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -332,6 +333,182 @@ type FileHotspot struct {
 	TotalBeads  int    `json:"total_beads"`
 	OpenBeads   int    `json:"open_beads"`
 	ClosedBeads int    `json:"closed_beads"`
+}
+
+// ImpactResult is the result of analyzing what beads might be affected by file changes.
+type ImpactResult struct {
+	Files         []string       `json:"files"`
+	AffectedBeads []AffectedBead `json:"affected_beads"`
+	RiskLevel     string         `json:"risk_level"`
+	RiskScore     float64        `json:"risk_score"`
+	Warnings      []string       `json:"warnings"`
+	Summary       string         `json:"summary"`
+}
+
+// AffectedBead represents a bead that touches one or more of the analyzed files.
+type AffectedBead struct {
+	BeadID       string    `json:"bead_id"`
+	Title        string    `json:"title"`
+	Status       string    `json:"status"`
+	OverlapFiles []string  `json:"overlap_files"`
+	OverlapCount int       `json:"overlap_count"`
+	LastActivity time.Time `json:"last_activity"`
+	Relevance    float64   `json:"relevance"`
+	TotalChanges int       `json:"total_changes"`
+}
+
+// ImpactAnalysis analyzes what beads might be affected if the given files are modified.
+func (fl *FileLookup) ImpactAnalysis(files []string) *ImpactResult {
+	result := &ImpactResult{
+		Files:         files,
+		AffectedBeads: []AffectedBead{},
+		RiskLevel:     "low",
+		RiskScore:     0.0,
+		Warnings:      []string{},
+	}
+
+	if len(files) == 0 {
+		result.Summary = "No files to analyze"
+		return result
+	}
+
+	normalizedFiles := make([]string, len(files))
+	for i, f := range files {
+		normalizedFiles[i] = normalizePath(f)
+	}
+
+	beadMap := make(map[string]*AffectedBead)
+	now := time.Now()
+
+	for _, filePath := range normalizedFiles {
+		lookup := fl.LookupByFile(filePath)
+
+		for _, ref := range lookup.OpenBeads {
+			ab := beadMap[ref.BeadID]
+			if ab == nil {
+				ab = &AffectedBead{
+					BeadID:       ref.BeadID,
+					Title:        ref.Title,
+					Status:       ref.Status,
+					OverlapFiles: []string{},
+					LastActivity: ref.LastTouch,
+				}
+				beadMap[ref.BeadID] = ab
+			}
+			ab.OverlapFiles = append(ab.OverlapFiles, filePath)
+			ab.OverlapCount = len(ab.OverlapFiles)
+			ab.TotalChanges += ref.TotalChanges
+			if ref.LastTouch.After(ab.LastActivity) {
+				ab.LastActivity = ref.LastTouch
+			}
+		}
+
+		for _, ref := range lookup.ClosedBeads {
+			if now.Sub(ref.LastTouch) > 7*24*time.Hour {
+				continue
+			}
+			ab := beadMap[ref.BeadID]
+			if ab == nil {
+				ab = &AffectedBead{
+					BeadID:       ref.BeadID,
+					Title:        ref.Title,
+					Status:       ref.Status,
+					OverlapFiles: []string{},
+					LastActivity: ref.LastTouch,
+				}
+				beadMap[ref.BeadID] = ab
+			}
+			ab.OverlapFiles = append(ab.OverlapFiles, filePath)
+			ab.OverlapCount = len(ab.OverlapFiles)
+			ab.TotalChanges += ref.TotalChanges
+			if ref.LastTouch.After(ab.LastActivity) {
+				ab.LastActivity = ref.LastTouch
+			}
+		}
+	}
+
+	openCount := 0
+	inProgressCount := 0
+	recentClosedCount := 0
+
+	for _, ab := range beadMap {
+		daysSince := now.Sub(ab.LastActivity).Hours() / 24
+		recencyScore := 1.0 - (daysSince / 7.0)
+		if recencyScore < 0 {
+			recencyScore = 0
+		}
+		overlapScore := float64(ab.OverlapCount) / float64(len(files))
+		statusMultiplier := 0.5
+		if ab.Status == "in_progress" {
+			statusMultiplier = 1.0
+			inProgressCount++
+		} else if ab.Status == "open" {
+			statusMultiplier = 0.8
+			openCount++
+		} else {
+			recentClosedCount++
+		}
+		ab.Relevance = (recencyScore*0.4 + overlapScore*0.4 + statusMultiplier*0.2)
+		result.AffectedBeads = append(result.AffectedBeads, *ab)
+	}
+
+	sort.Slice(result.AffectedBeads, func(i, j int) bool {
+		statusPriority := map[string]int{"in_progress": 0, "open": 1, "closed": 2}
+		pi, pj := statusPriority[result.AffectedBeads[i].Status], statusPriority[result.AffectedBeads[j].Status]
+		if pi != pj {
+			return pi < pj
+		}
+		return result.AffectedBeads[i].Relevance > result.AffectedBeads[j].Relevance
+	})
+
+	result.RiskScore = float64(inProgressCount)*0.4 + float64(openCount)*0.2 + float64(recentClosedCount)*0.05
+	if len(files) > 3 {
+		result.RiskScore += 0.1
+	}
+	if result.RiskScore > 1.0 {
+		result.RiskScore = 1.0
+	}
+
+	switch {
+	case result.RiskScore >= 0.7:
+		result.RiskLevel = "critical"
+	case result.RiskScore >= 0.4:
+		result.RiskLevel = "high"
+	case result.RiskScore >= 0.2:
+		result.RiskLevel = "medium"
+	default:
+		result.RiskLevel = "low"
+	}
+
+	if inProgressCount > 0 {
+		result.Warnings = append(result.Warnings, "Active work in progress on these files - coordinate before making changes")
+	}
+	if openCount > 0 {
+		result.Warnings = append(result.Warnings, "Open beads touch these files - review before modifying")
+	}
+
+	total := inProgressCount + openCount + recentClosedCount
+	if total == 0 {
+		result.Summary = "No beads found touching these files - safe to proceed"
+	} else {
+		parts := []string{}
+		if inProgressCount > 0 {
+			parts = append(parts, fmt.Sprintf("%d bead(s) in progress", inProgressCount))
+		}
+		if openCount > 0 {
+			parts = append(parts, fmt.Sprintf("%d open bead(s)", openCount))
+		}
+		if recentClosedCount > 0 {
+			parts = append(parts, fmt.Sprintf("%d recently closed bead(s)", recentClosedCount))
+		}
+		prefix := "Found "
+		if inProgressCount > 0 {
+			prefix = "⚠️ Conflict risk: "
+		}
+		result.Summary = prefix + strings.Join(parts, ", ") + " touching these files"
+	}
+
+	return result
 }
 
 // Helper functions

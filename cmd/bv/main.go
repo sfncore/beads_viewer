@@ -112,6 +112,8 @@ func main() {
 	fileBeadsLimit := flag.Int("file-beads-limit", 20, "Max closed beads to show (use with --robot-file-beads)")
 	fileHotspots := flag.Bool("robot-file-hotspots", false, "Output files touched by most beads as JSON")
 	hotspotsLimit := flag.Int("hotspots-limit", 10, "Max hotspots to show (use with --robot-file-hotspots)")
+	// Impact analysis flag (bv-19pq)
+	robotImpact := flag.String("robot-impact", "", "Analyze impact of modifying files (comma-separated paths)")
 	// Sprint flags (bv-156)
 	robotSprintList := flag.Bool("robot-sprint-list", false, "Output sprints as JSON")
 	robotSprintShow := flag.String("robot-sprint-show", "", "Output specific sprint details as JSON")
@@ -190,6 +192,7 @@ func main() {
 		*robotHistory ||
 		*robotFileBeads != "" ||
 		*fileHotspots ||
+		*robotImpact != "" ||
 		*robotSprintList ||
 		*robotSprintShow != "" ||
 		*robotForecast != "" ||
@@ -321,6 +324,18 @@ func main() {
 		fmt.Println("      Flags:")
 		fmt.Println("      - --hotspots-limit <n>: Max hotspots to show (default: 10)")
 		fmt.Println("      Example: bv --robot-file-hotspots")
+		fmt.Println("")
+		fmt.Println("  --robot-impact <files>")
+		fmt.Println("      Analyzes impact of modifying files - what beads might be affected?")
+		fmt.Println("      Critical for agents: check before making changes to avoid conflicts.")
+		fmt.Println("      Key sections:")
+		fmt.Println("      - risk_level: low/medium/high/critical based on open beads")
+		fmt.Println("      - affected_beads: Beads touching these files with relevance scores")
+		fmt.Println("      - warnings: Actionable warnings about potential conflicts")
+		fmt.Println("      - summary: Human-readable impact summary")
+		fmt.Println("      Input: Comma-separated file paths")
+		fmt.Println("      Example: bv --robot-impact pkg/auth/token.go")
+		fmt.Println("      Example: bv --robot-impact pkg/auth/token.go,pkg/auth/session.go")
 		fmt.Println("")
 		fmt.Println("  --robot-sprint-list")
 		fmt.Println("      Outputs all sprints as JSON for planning and forecasting.")
@@ -2711,6 +2726,87 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Error encoding file beads: %v\n", err)
 				os.Exit(1)
 			}
+		}
+		os.Exit(0)
+	}
+
+	// Handle --robot-impact flag (bv-19pq)
+	if *robotImpact != "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
+			os.Exit(1)
+		}
+
+		if err := correlation.ValidateRepository(cwd); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		beadsDir, err := loader.GetBeadsDir("")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting beads directory: %v\n", err)
+			os.Exit(1)
+		}
+		beadsPath, err := loader.FindJSONLPath(beadsDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error finding beads file: %v\n", err)
+			os.Exit(1)
+		}
+
+		beadInfos := make([]correlation.BeadInfo, len(issues))
+		for i, issue := range issues {
+			beadInfos[i] = correlation.BeadInfo{
+				ID:     issue.ID,
+				Title:  issue.Title,
+				Status: string(issue.Status),
+			}
+		}
+
+		correlator := correlation.NewCorrelator(cwd, beadsPath)
+		report, err := correlator.GenerateReport(beadInfos, correlation.CorrelatorOptions{
+			Limit: *historyLimit,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating history report: %v\n", err)
+			os.Exit(1)
+		}
+
+		fileLookup := correlation.NewFileLookup(report)
+		files := strings.Split(*robotImpact, ",")
+		for i := range files {
+			files[i] = strings.TrimSpace(files[i])
+		}
+
+		impactResult := fileLookup.ImpactAnalysis(files)
+
+		type ImpactOutput struct {
+			GeneratedAt   time.Time                  `json:"generated_at"`
+			DataHash      string                     `json:"data_hash"`
+			Files         []string                   `json:"files"`
+			RiskLevel     string                     `json:"risk_level"`
+			RiskScore     float64                    `json:"risk_score"`
+			Summary       string                     `json:"summary"`
+			Warnings      []string                   `json:"warnings"`
+			AffectedBeads []correlation.AffectedBead `json:"affected_beads"`
+		}
+
+		output := ImpactOutput{
+			GeneratedAt:   time.Now(),
+			DataHash:      report.DataHash,
+			Files:         files,
+			RiskLevel:     impactResult.RiskLevel,
+			RiskScore:     impactResult.RiskScore,
+			Summary:       impactResult.Summary,
+			Warnings:      impactResult.Warnings,
+			AffectedBeads: impactResult.AffectedBeads,
+		}
+
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(output); err != nil {
+			fmt.Fprintf(os.Stderr, "Error encoding impact analysis: %v\n", err)
+			os.Exit(1)
 		}
 		os.Exit(0)
 	}

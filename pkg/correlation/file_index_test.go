@@ -434,3 +434,116 @@ func TestGetAllFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestImpactAnalysisEmpty(t *testing.T) {
+	lookup := NewFileLookup(nil)
+	result := lookup.ImpactAnalysis([]string{})
+	if result.Summary != "No files to analyze" {
+		t.Errorf("Expected 'No files to analyze', got %q", result.Summary)
+	}
+	if len(result.AffectedBeads) != 0 {
+		t.Errorf("Expected 0 affected beads, got %d", len(result.AffectedBeads))
+	}
+}
+
+func TestImpactAnalysisWithOpenBeads(t *testing.T) {
+	now := time.Now()
+	report := &HistoryReport{
+		Histories: map[string]BeadHistory{
+			"bv-1": {
+				BeadID: "bv-1",
+				Title:  "In progress work",
+				Status: "in_progress",
+				Commits: []CorrelatedCommit{
+					{
+						SHA:       "a",
+						ShortSHA:  "a",
+						Timestamp: now.Add(-1 * time.Hour),
+						Files:     []FileChange{{Path: "auth/token.go", Insertions: 10}},
+					},
+				},
+			},
+			"bv-2": {
+				BeadID: "bv-2",
+				Title:  "Open task",
+				Status: "open",
+				Commits: []CorrelatedCommit{
+					{
+						SHA:       "b",
+						ShortSHA:  "b",
+						Timestamp: now.Add(-2 * time.Hour),
+						Files:     []FileChange{{Path: "auth/token.go", Insertions: 5}},
+					},
+				},
+			},
+			"bv-3": {
+				BeadID: "bv-3",
+				Title:  "Closed task",
+				Status: "closed",
+				Commits: []CorrelatedCommit{
+					{
+						SHA:       "c",
+						ShortSHA:  "c",
+						Timestamp: now.Add(-24 * time.Hour),
+						Files:     []FileChange{{Path: "auth/token.go", Insertions: 3}},
+					},
+				},
+			},
+		},
+		CommitIndex: CommitIndex{
+			"a": {"bv-1"},
+			"b": {"bv-2"},
+			"c": {"bv-3"},
+		},
+	}
+
+	lookup := NewFileLookup(report)
+	result := lookup.ImpactAnalysis([]string{"auth/token.go"})
+
+	// Should have high risk due to in_progress bead
+	if result.RiskLevel != "high" && result.RiskLevel != "critical" {
+		t.Errorf("Expected high or critical risk, got %q", result.RiskLevel)
+	}
+
+	// Should have warnings
+	if len(result.Warnings) == 0 {
+		t.Error("Expected warnings for in_progress bead")
+	}
+
+	// in_progress should be first
+	if len(result.AffectedBeads) < 1 || result.AffectedBeads[0].Status != "in_progress" {
+		t.Error("Expected in_progress bead to be first")
+	}
+}
+
+func TestImpactAnalysisRiskLevels(t *testing.T) {
+	now := time.Now()
+
+	// Test low risk (only old closed beads)
+	report := &HistoryReport{
+		Histories: map[string]BeadHistory{
+			"bv-1": {
+				BeadID: "bv-1",
+				Title:  "Old closed",
+				Status: "closed",
+				Commits: []CorrelatedCommit{
+					{
+						SHA:       "a",
+						ShortSHA:  "a",
+						Timestamp: now.Add(-10 * 24 * time.Hour), // 10 days ago
+						Files:     []FileChange{{Path: "old.go"}},
+					},
+				},
+			},
+		},
+		CommitIndex: CommitIndex{"a": {"bv-1"}},
+	}
+
+	lookup := NewFileLookup(report)
+	result := lookup.ImpactAnalysis([]string{"old.go"})
+
+	// Should be low risk since the closed bead is > 7 days old
+	if result.RiskLevel != "low" {
+		t.Errorf("Expected low risk for old closed beads, got %q", result.RiskLevel)
+	}
+}
