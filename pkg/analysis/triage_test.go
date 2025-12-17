@@ -312,8 +312,8 @@ func TestTriageInProgressAction(t *testing.T) {
 		daysOld        int
 		expectedAction string
 	}{
-		{"fresh in_progress", 5, "Start work on this issue"},            // < 9 days
-		{"moderate in_progress", 12, "Start work on this issue"},        // > 9 days, < 14 days (new threshold)
+		{"fresh in_progress", 5, "Start work on this issue"},               // < 9 days
+		{"moderate in_progress", 12, "Start work on this issue"},           // > 9 days, < 14 days (new threshold)
 		{"stale in_progress", 20, "Check if this is stuck and needs help"}, // > 14 days
 	}
 
@@ -949,7 +949,7 @@ func TestTriageGroupByTrack_Empty(t *testing.T) {
 	opts := TriageOptions{GroupByTrack: true}
 	triage := ComputeTriageWithOptions(nil, opts)
 
-	if triage.RecommendationsByTrack != nil && len(triage.RecommendationsByTrack) > 0 {
+	if len(triage.RecommendationsByTrack) > 0 {
 		t.Errorf("expected empty track groups for nil issues, got %d", len(triage.RecommendationsByTrack))
 	}
 }
@@ -1027,7 +1027,7 @@ func TestTriageGroupByLabel_Empty(t *testing.T) {
 	opts := TriageOptions{GroupByLabel: true}
 	triage := ComputeTriageWithOptions(nil, opts)
 
-	if triage.RecommendationsByLabel != nil && len(triage.RecommendationsByLabel) > 0 {
+	if len(triage.RecommendationsByLabel) > 0 {
 		t.Errorf("expected empty label groups for nil issues, got %d", len(triage.RecommendationsByLabel))
 	}
 }

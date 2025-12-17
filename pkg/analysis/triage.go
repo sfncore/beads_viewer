@@ -64,7 +64,7 @@ type Recommendation struct {
 	Labels      []string       `json:"labels"`
 	Score       float64        `json:"score"`
 	Breakdown   ScoreBreakdown `json:"breakdown"`
-	Action      string         `json:"action"` // "work", "review", "unblock"
+	Action      string         `json:"action"` // Suggested next action (human-readable)
 	Reasons     []string       `json:"reasons"`
 	UnblocksIDs []string       `json:"unblocks_ids,omitempty"`
 	BlockedBy   []string       `json:"blocked_by,omitempty"`
@@ -157,7 +157,7 @@ func computeProjectVelocity(issues []model.Issue, now time.Time, weeks int) *Vel
 			continue
 		}
 
-		closedAt := time.Time{}
+		var closedAt time.Time
 		switch {
 		case iss.ClosedAt != nil:
 			closedAt = iss.ClosedAt.UTC()
@@ -289,20 +289,20 @@ type TriageOptions struct {
 // TrackRecommendationGroup groups recommendations by execution track (bv-87)
 type TrackRecommendationGroup struct {
 	TrackID         string           `json:"track_id"`
-	Reason          string           `json:"reason"`                     // Why these are grouped (e.g., "Independent work stream")
-	Recommendations []Recommendation `json:"recommendations"`            // Recommendations in this track
-	TopPick         *TopPick         `json:"top_pick,omitempty"`         // Best item in this track
-	ClaimCommand    string           `json:"claim_command,omitempty"`    // bd update <top_pick_id> --status=in_progress
-	TotalUnblocks   int              `json:"total_unblocks"`             // Sum of unblocks in this track
+	Reason          string           `json:"reason"`                  // Why these are grouped (e.g., "Independent work stream")
+	Recommendations []Recommendation `json:"recommendations"`         // Recommendations in this track
+	TopPick         *TopPick         `json:"top_pick,omitempty"`      // Best item in this track
+	ClaimCommand    string           `json:"claim_command,omitempty"` // bd update <top_pick_id> --status=in_progress
+	TotalUnblocks   int              `json:"total_unblocks"`          // Sum of unblocks in this track
 }
 
 // LabelRecommendationGroup groups recommendations by label (bv-87)
 type LabelRecommendationGroup struct {
 	Label           string           `json:"label"`
-	Recommendations []Recommendation `json:"recommendations"`            // Recommendations with this label
-	TopPick         *TopPick         `json:"top_pick,omitempty"`         // Best item with this label
-	ClaimCommand    string           `json:"claim_command,omitempty"`    // bd update <top_pick_id> --status=in_progress
-	TotalUnblocks   int              `json:"total_unblocks"`             // Sum of unblocks for this label
+	Recommendations []Recommendation `json:"recommendations"`         // Recommendations with this label
+	TopPick         *TopPick         `json:"top_pick,omitempty"`      // Best item with this label
+	ClaimCommand    string           `json:"claim_command,omitempty"` // bd update <top_pick_id> --status=in_progress
+	TotalUnblocks   int              `json:"total_unblocks"`          // Sum of unblocks for this label
 }
 
 // ComputeTriageWithOptions generates triage with custom options
@@ -456,48 +456,6 @@ func computeCounts(issues []model.Issue, analyzer *Analyzer) HealthCounts {
 	return counts
 }
 
-// buildRecommendations creates detailed recommendations from impact scores
-func buildRecommendations(scores []ImpactScore, analyzer *Analyzer, unblocksMap map[string][]string, limit int) []Recommendation {
-	if len(scores) > limit {
-		scores = scores[:limit]
-	}
-
-	recommendations := make([]Recommendation, 0, len(scores))
-	for _, score := range scores {
-		issue := analyzer.GetIssue(score.IssueID)
-		if issue == nil {
-			continue
-		}
-
-		// Determine action and reasons
-		action, reasons := determineAction(score, unblocksMap[score.IssueID], issue)
-
-		// Get blocked by
-		blockedBy := analyzer.GetOpenBlockers(score.IssueID)
-
-		rec := Recommendation{
-			ID:          score.IssueID,
-			Title:       score.Title,
-			Type:        string(issue.IssueType),
-			Status:      score.Status,
-			Priority:    score.Priority,
-			Labels:      issue.Labels,
-			Score:       score.Score,
-			Breakdown:   score.Breakdown,
-			Action:      action,
-			Reasons:     reasons,
-			UnblocksIDs: unblocksMap[score.IssueID],
-		}
-		if len(blockedBy) > 0 {
-			rec.BlockedBy = blockedBy
-		}
-
-		recommendations = append(recommendations, rec)
-	}
-
-	return recommendations
-}
-
 // buildRecommendationsFromTriageScores creates recommendations using enhanced triage scores
 func buildRecommendationsFromTriageScores(scores []TriageScore, analyzer *Analyzer, unblocksMap map[string][]string, limit int) []Recommendation {
 	if len(scores) > limit {
@@ -538,62 +496,6 @@ func buildRecommendationsFromTriageScores(scores []TriageScore, analyzer *Analyz
 	}
 
 	return recommendations
-}
-
-// determineAction decides what action to take and why
-func determineAction(score ImpactScore, unblocks []string, issue *model.Issue) (string, []string) {
-	var reasons []string
-	action := "work"
-
-	// High PageRank = central to project
-	if score.Breakdown.PageRankNorm > 0.3 {
-		reasons = append(reasons, fmt.Sprintf("High centrality (PageRank: %.2f)", score.Breakdown.PageRankNorm))
-	}
-
-	// High Betweenness = bottleneck
-	if score.Breakdown.BetweennessNorm > 0.5 {
-		reasons = append(reasons, fmt.Sprintf("Critical bottleneck (Betweenness: %.2f)", score.Breakdown.BetweennessNorm))
-	}
-
-	// High blocker ratio = unblocks many
-	if len(unblocks) >= 3 {
-		reasons = append(reasons, fmt.Sprintf("Unblocks %d downstream items", len(unblocks)))
-		action = "unblock" // Priority action
-	} else if len(unblocks) > 0 {
-		reasons = append(reasons, fmt.Sprintf("Unblocks %d item(s)", len(unblocks)))
-	}
-
-	// Staleness - check if issue is stale
-	isStale := score.Breakdown.StalenessNorm > 0.5
-	if isStale {
-		days := int(score.Breakdown.StalenessNorm * 30)
-		reasons = append(reasons, fmt.Sprintf("Stale for %d+ days", days))
-	}
-
-	// In progress items may need review
-	if issue.Status == model.StatusInProgress {
-		if isStale {
-			// Very stale in_progress - definitely needs review
-			action = "review"
-			reasons = append(reasons, "In progress but appears stuck")
-		} else if score.Breakdown.StalenessNorm > 0.3 {
-			// Moderately stale in_progress - might need attention
-			action = "review"
-			reasons = append(reasons, "In progress - may need attention")
-		}
-	}
-
-	// Priority consideration
-	if score.Priority <= 1 {
-		reasons = append(reasons, fmt.Sprintf("High priority (P%d)", score.Priority))
-	}
-
-	// Default reason if none
-	if len(reasons) == 0 {
-		reasons = append(reasons, "Good candidate for work")
-	}
-
-	return action, reasons
 }
 
 // buildQuickWins finds low-complexity, high-impact items
@@ -1257,9 +1159,7 @@ func buildRecommendationsByTrack(recs []Recommendation, analyzer *Analyzer, unbl
 				Reasons:  rec.Reasons,
 				Unblocks: len(unblocksMap[rec.ID]),
 			}
-			if rec.Action == "work" || rec.Action == "unblock" {
-				group.ClaimCommand = fmt.Sprintf("bd update %s --status=in_progress", rec.ID)
-			}
+			group.ClaimCommand = fmt.Sprintf("bd update %s --status=in_progress", rec.ID)
 		}
 	}
 
@@ -1303,9 +1203,7 @@ func buildRecommendationsByLabel(recs []Recommendation, unblocksMap map[string][
 				Reasons:  rec.Reasons,
 				Unblocks: len(unblocksMap[rec.ID]),
 			}
-			if rec.Action == "work" || rec.Action == "unblock" {
-				group.ClaimCommand = fmt.Sprintf("bd update %s --status=in_progress", rec.ID)
-			}
+			group.ClaimCommand = fmt.Sprintf("bd update %s --status=in_progress", rec.ID)
 		}
 	}
 
