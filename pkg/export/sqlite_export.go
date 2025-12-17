@@ -114,9 +114,9 @@ func (e *SQLiteExporter) Export(outputDir string) error {
 		return fmt.Errorf("insert triage: %w", err)
 	}
 
-	// Create FTS index
+	// Create FTS index (modernc.org/sqlite has FTS5 built-in)
 	if err := CreateFTSIndex(db); err != nil {
-		// FTS5 may not be available in all SQLite builds - log but continue
+		// Defensive: log but continue if FTS5 creation fails for any reason
 		fmt.Printf("Warning: FTS5 not available: %v\n", err)
 	}
 

@@ -136,10 +136,10 @@ func TestCreateFTSIndex(t *testing.T) {
 		t.Fatalf("Insert test data failed: %v", err)
 	}
 
-	// Create FTS index - skip if FTS5 not available (requires sqlite3 compiled with FTS5)
+	// Create FTS index (modernc.org/sqlite has FTS5 built-in)
 	if err := CreateFTSIndex(db); err != nil {
 		if containsString(err.Error(), "no such module: fts5") {
-			t.Skip("FTS5 not available in this SQLite build - skipping (will work with sql.js in browser)")
+			t.Skip("FTS5 unexpectedly not available - skipping")
 		}
 		t.Fatalf("CreateFTSIndex failed: %v", err)
 	}
