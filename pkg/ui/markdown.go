@@ -201,17 +201,20 @@ func buildStyleFromTheme(theme Theme, isDark bool) ansi.StyleConfig {
 				Italic: boolPtr(true),
 			},
 			Indent: uintPtr(2),
+			Margin: uintPtr(0),
 		},
 		Paragraph: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
 				Color: stringPtr(docFg),
 			},
+			Margin: uintPtr(0),
 		},
 		List: ansi.StyleList{
 			StyleBlock: ansi.StyleBlock{
 				StylePrimitive: ansi.StylePrimitive{
 					Color: stringPtr(docFg),
 				},
+				Margin: uintPtr(0),
 			},
 			LevelIndent: 2,
 		},
@@ -220,42 +223,49 @@ func buildStyleFromTheme(theme Theme, isDark bool) ansi.StyleConfig {
 				Color: stringPtr(primaryColor),
 				Bold:  boolPtr(true),
 			},
+			Margin: uintPtr(0),
 		},
 		H1: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
 				Color: stringPtr(primaryColor),
 				Bold:  boolPtr(true),
 			},
+			Margin: uintPtr(0),
 		},
 		H2: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
 				Color: stringPtr(primaryColor),
 				Bold:  boolPtr(true),
 			},
+			Margin: uintPtr(0),
 		},
 		H3: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
 				Color: stringPtr(primaryColor),
 				Bold:  boolPtr(true),
 			},
+			Margin: uintPtr(0),
 		},
 		H4: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
 				Color: stringPtr(secondaryColor),
 				Bold:  boolPtr(true),
 			},
+			Margin: uintPtr(0),
 		},
 		H5: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
 				Color: stringPtr(secondaryColor),
 				Bold:  boolPtr(true),
 			},
+			Margin: uintPtr(0),
 		},
 		H6: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
 				Color: stringPtr(mutedColor),
 				Bold:  boolPtr(true),
 			},
+			Margin: uintPtr(0),
 		},
 		Strong: ansi.StylePrimitive{
 			Color: stringPtr(featureColor),
@@ -307,7 +317,7 @@ func buildStyleFromTheme(theme Theme, isDark bool) ansi.StyleConfig {
 				StylePrimitive: ansi.StylePrimitive{
 					Color: stringPtr(featureColor),
 				},
-				Margin: uintPtr(1),
+				Margin: uintPtr(0),
 			},
 			Chroma: &ansi.Chroma{
 				Text: ansi.StylePrimitive{
@@ -411,6 +421,7 @@ func buildStyleFromTheme(theme Theme, isDark bool) ansi.StyleConfig {
 				StylePrimitive: ansi.StylePrimitive{
 					Color: stringPtr(docFg),
 				},
+				Margin: uintPtr(0),
 			},
 			CenterSeparator: stringPtr("┼"),
 			ColumnSeparator: stringPtr("│"),
