@@ -1809,7 +1809,10 @@ func (h *HistoryModel) renderHeader() string {
 	}
 
 	// Check for transition flash effect (bv-kvlx)
-	// Show highlight for 150ms after mode toggle
+	// Show highlight for 150ms after mode toggle.
+	// Note: Since Bubble Tea only re-renders on Update, the flash shows during the
+	// render immediately after toggle, and clears on subsequent renders. If no user
+	// input occurs, the flash persists until next action - this is acceptable TUI behavior.
 	isTransitioning := !h.modeChangedAt.IsZero() && time.Since(h.modeChangedAt) <= 150*time.Millisecond
 
 	modeStyle := t.Renderer.NewStyle().
