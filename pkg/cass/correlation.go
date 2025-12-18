@@ -131,6 +131,10 @@ func NewCorrelatorWithOptions(searcher *Searcher, cache *Cache, opts ...Correlat
 // 2. Keyword extraction (medium confidence)
 // 3. Timestamp proximity (lower confidence)
 func (c *Correlator) Correlate(ctx context.Context, issue *model.Issue) CorrelationResult {
+	if issue == nil {
+		return CorrelationResult{}
+	}
+
 	start := c.now()
 
 	// Check cache first
@@ -252,8 +256,8 @@ func (c *Correlator) searchByKeywords(ctx context.Context, issue *model.Issue, k
 	scored := make([]ScoredResult, 0, len(resp.Results))
 	for _, r := range resp.Results {
 		// Score based on how well keywords match
-		score := c.scoreKeywordMatch(r, keywords)
-		score = c.applyTimeDecay(score, r.Timestamp)
+		baseScore := c.scoreKeywordMatch(r, keywords)
+		score := c.applyTimeDecay(baseScore, r.Timestamp)
 		score = c.applyWorkspaceBoost(score, r.SourcePath)
 
 		if score >= MinScoreThreshold {
@@ -261,7 +265,7 @@ func (c *Correlator) searchByKeywords(ctx context.Context, issue *model.Issue, k
 			scored = append(scored, ScoredResult{
 				SearchResult: r,
 				FinalScore:   score,
-				BaseScore:    c.scoreKeywordMatch(r, keywords),
+				BaseScore:    baseScore,
 				Strategy:     StrategyKeywords,
 				Keywords:     matchedKeywords,
 			})
@@ -293,14 +297,14 @@ func (c *Correlator) searchByTimestamp(ctx context.Context, issue *model.Issue) 
 
 	scored := make([]ScoredResult, 0, len(resp.Results))
 	for _, r := range resp.Results {
-		score := c.scoreTimestampProximity(r.Timestamp, issue)
-		score = c.applyWorkspaceBoost(score, r.SourcePath)
+		baseScore := c.scoreTimestampProximity(r.Timestamp, issue)
+		score := c.applyWorkspaceBoost(baseScore, r.SourcePath)
 
 		if score >= MinScoreThreshold {
 			scored = append(scored, ScoredResult{
 				SearchResult: r,
 				FinalScore:   score,
-				BaseScore:    score,
+				BaseScore:    baseScore,
 				Strategy:     StrategyTimestamp,
 			})
 		}
@@ -496,15 +500,26 @@ func (c *Correlator) applyWorkspaceBoost(score float64, sourcePath string) float
 		return score
 	}
 
-	// Check if sourcePath is under workspace
-	if strings.HasPrefix(sourcePath, c.workspace) {
+	// Normalize paths for comparison
+	workspace := filepath.Clean(c.workspace)
+	source := filepath.Clean(sourcePath)
+
+	// Check if sourcePath is under workspace (primary check)
+	if strings.HasPrefix(source, workspace+string(filepath.Separator)) || source == workspace {
 		return score * MultiplierSameWorkspace
 	}
 
-	// Also check if workspace is in the source path (for relative paths)
-	workspaceBase := filepath.Base(c.workspace)
-	if workspaceBase != "" && strings.Contains(sourcePath, workspaceBase) {
-		return score * MultiplierSameWorkspace
+	// Fallback: check if the workspace directory name appears as a path component
+	// This handles cases where paths are relative or have different roots
+	workspaceBase := filepath.Base(workspace)
+	if workspaceBase != "" && workspaceBase != "." && workspaceBase != "/" {
+		// Check for the base name as a complete path component (bounded by separators)
+		sep := string(filepath.Separator)
+		if strings.Contains(source, sep+workspaceBase+sep) ||
+			strings.HasPrefix(source, workspaceBase+sep) ||
+			strings.HasSuffix(source, sep+workspaceBase) {
+			return score * MultiplierSameWorkspace
+		}
 	}
 
 	return score

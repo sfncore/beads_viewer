@@ -2,6 +2,7 @@ package cass
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -390,6 +391,29 @@ func TestCorrelator_Scoring(t *testing.T) {
 			t.Errorf("applyWorkspaceBoost for non-matching path = %f, want 100", score)
 		}
 	})
+
+	t.Run("applyWorkspaceBoost_similar_name_no_match", func(t *testing.T) {
+		// Should NOT match /other/project-v2 when workspace is /home/user/project
+		score := correlator.applyWorkspaceBoost(100, "/other/project-v2/file.json")
+		if score != 100 {
+			t.Errorf("applyWorkspaceBoost should not match similar names = %f, want 100", score)
+		}
+	})
+
+	t.Run("applyWorkspaceBoost_empty_workspace", func(t *testing.T) {
+		c := &Correlator{workspace: ""}
+		score := c.applyWorkspaceBoost(100, "/any/path/file.json")
+		if score != 100 {
+			t.Errorf("applyWorkspaceBoost with empty workspace = %f, want 100", score)
+		}
+	})
+
+	t.Run("applyWorkspaceBoost_empty_source", func(t *testing.T) {
+		score := correlator.applyWorkspaceBoost(100, "")
+		if score != 100 {
+			t.Errorf("applyWorkspaceBoost with empty source = %f, want 100", score)
+		}
+	})
 }
 
 func TestCorrelator_CalculateSearchDays(t *testing.T) {
@@ -511,6 +535,27 @@ func TestCorrelator_RankAndLimit(t *testing.T) {
 	}
 }
 
+func TestCorrelator_NilIssue(t *testing.T) {
+	detector := NewDetector()
+	detector.lookPath = func(name string) (string, error) { return "/usr/bin/cass", nil }
+	detector.runCommand = func(ctx context.Context, name string, args ...string) (int, error) { return 0, nil }
+	_ = detector.Check()
+
+	searcher := NewSearcher(detector)
+	correlator := NewCorrelator(searcher, nil, "")
+
+	// Should not panic with nil issue
+	result := correlator.Correlate(context.Background(), nil)
+
+	if result.BeadID != "" {
+		t.Errorf("BeadID = %q, want empty for nil issue", result.BeadID)
+	}
+
+	if len(result.TopSessions) != 0 {
+		t.Errorf("Expected empty TopSessions for nil issue, got %d", len(result.TopSessions))
+	}
+}
+
 func TestCorrelator_EmptyResults(t *testing.T) {
 	detector := NewDetector()
 	detector.lookPath = func(name string) (string, error) { return "/usr/bin/cass", nil }
@@ -542,16 +587,7 @@ func TestCorrelator_EmptyResults(t *testing.T) {
 	}
 }
 
-// Helper function
+// Helper function - simple contains check for test assertions
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsAt(s, substr, 0))
-}
-
-func containsAt(s, substr string, start int) bool {
-	for i := start; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(s, substr)
 }
