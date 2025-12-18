@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/cass"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -1515,6 +1516,293 @@ func TestBuildTimeline(t *testing.T) {
 	}
 }
 
+// Tests for session integration (bv-pr1l)
+
+func TestHistoryModel_SessionCache(t *testing.T) {
+	theme := testTheme()
+	report := createTestHistoryReport()
+	h := NewHistoryModel(report, theme)
+
+	// Initially no sessions cached
+	if h.HasSessionsForBead("bv-1") {
+		t.Error("HasSessionsForBead should return false when no sessions cached")
+	}
+
+	if sessions := h.GetSessionsForBead("bv-1"); sessions != nil {
+		t.Error("GetSessionsForBead should return nil when no sessions cached")
+	}
+
+	// Set sessions for a bead
+	testSessions := []cass.ScoredResult{
+		{
+			SearchResult: cass.SearchResult{
+				SourcePath: "/path/to/session1.md",
+				Agent:      "claude",
+				Title:      "Working on auth",
+				Timestamp:  time.Now(),
+			},
+			FinalScore: 85.0,
+		},
+		{
+			SearchResult: cass.SearchResult{
+				SourcePath: "/path/to/session2.md",
+				Agent:      "cursor",
+				Title:      "Debugging tokens",
+				Timestamp:  time.Now().Add(-time.Hour),
+			},
+			FinalScore: 65.0,
+		},
+	}
+
+	h.SetSessionsForBead("bv-1", testSessions)
+
+	// Should now be cached
+	if !h.HasSessionsForBead("bv-1") {
+		t.Error("HasSessionsForBead should return true after setting sessions")
+	}
+
+	retrieved := h.GetSessionsForBead("bv-1")
+	if len(retrieved) != 2 {
+		t.Errorf("GetSessionsForBead returned %d sessions, want 2", len(retrieved))
+	}
+
+	// Other beads should still have no sessions
+	if h.HasSessionsForBead("bv-2") {
+		t.Error("HasSessionsForBead should return false for different bead")
+	}
+
+	// Clear cache
+	h.ClearSessionCache()
+	if h.HasSessionsForBead("bv-1") {
+		t.Error("HasSessionsForBead should return false after clearing cache")
+	}
+}
+
+func TestBuildTimelineWithSessions(t *testing.T) {
+	theme := testTheme()
+	now := time.Now()
+
+	history := correlation.BeadHistory{
+		BeadID: "bv-test",
+		Title:  "Test Bead",
+		Status: "in_progress",
+		Milestones: correlation.BeadMilestones{
+			Created: &correlation.BeadEvent{
+				Timestamp: now.Add(-48 * time.Hour),
+			},
+			Claimed: &correlation.BeadEvent{
+				Timestamp: now.Add(-36 * time.Hour),
+				Author:    "alice",
+			},
+		},
+		Commits: []correlation.CorrelatedCommit{
+			{
+				ShortSHA:   "abc1234",
+				Message:    "Initial fix",
+				Timestamp:  now.Add(-24 * time.Hour),
+				Confidence: 0.95,
+			},
+		},
+	}
+
+	report := &correlation.HistoryReport{
+		Histories: map[string]correlation.BeadHistory{
+			"bv-test": history,
+		},
+	}
+	h := NewHistoryModel(report, theme)
+
+	// Add sessions to cache
+	sessions := []cass.ScoredResult{
+		{
+			SearchResult: cass.SearchResult{
+				SourcePath: "/path/to/session.md",
+				Agent:      "claude",
+				Title:      "Working on fix",
+				Timestamp:  now.Add(-12 * time.Hour),
+			},
+			FinalScore: 90.0,
+		},
+	}
+	h.SetSessionsForBead("bv-test", sessions)
+
+	entries := h.buildTimeline(history)
+
+	// Should have: created, claimed, 1 commit, 1 session = 4 entries
+	if len(entries) != 4 {
+		t.Errorf("buildTimeline() with sessions returned %d entries, want 4", len(entries))
+	}
+
+	// Count entry types
+	var eventCount, commitCount, sessionCount int
+	for _, e := range entries {
+		switch e.EntryType {
+		case timelineEntryEvent:
+			eventCount++
+		case timelineEntryCommit:
+			commitCount++
+		case timelineEntrySession:
+			sessionCount++
+		}
+	}
+
+	if eventCount != 2 {
+		t.Errorf("Expected 2 events, got %d", eventCount)
+	}
+	if commitCount != 1 {
+		t.Errorf("Expected 1 commit, got %d", commitCount)
+	}
+	if sessionCount != 1 {
+		t.Errorf("Expected 1 session, got %d", sessionCount)
+	}
+
+	// Verify chronological order
+	for i := 1; i < len(entries); i++ {
+		if entries[i].Timestamp.Before(entries[i-1].Timestamp) {
+			t.Errorf("Entries not in chronological order at index %d", i)
+		}
+	}
+}
+
+func TestBuildTimelineSessionOrderingOnTimeTie(t *testing.T) {
+	theme := testTheme()
+	now := time.Now()
+
+	// Create a history where commit and session have the same timestamp
+	sameTime := now.Add(-24 * time.Hour)
+
+	history := correlation.BeadHistory{
+		BeadID: "bv-tie",
+		Title:  "Time Tie Test",
+		Status: "open",
+		Milestones: correlation.BeadMilestones{
+			Created: &correlation.BeadEvent{
+				Timestamp: now.Add(-48 * time.Hour),
+			},
+		},
+		Commits: []correlation.CorrelatedCommit{
+			{
+				ShortSHA:   "abc1234",
+				Message:    "Fix applied",
+				Timestamp:  sameTime,
+				Confidence: 0.90,
+			},
+		},
+	}
+
+	report := &correlation.HistoryReport{
+		Histories: map[string]correlation.BeadHistory{
+			"bv-tie": history,
+		},
+	}
+	h := NewHistoryModel(report, theme)
+
+	// Add session with same timestamp
+	sessions := []cass.ScoredResult{
+		{
+			SearchResult: cass.SearchResult{
+				SourcePath: "/path/to/session.md",
+				Agent:      "cursor",
+				Title:      "Same time session",
+				Timestamp:  sameTime,
+			},
+			FinalScore: 75.0,
+		},
+	}
+	h.SetSessionsForBead("bv-tie", sessions)
+
+	entries := h.buildTimeline(history)
+
+	// Should have: created, commit, session = 3 entries
+	if len(entries) != 3 {
+		t.Errorf("buildTimeline() returned %d entries, want 3", len(entries))
+	}
+
+	// Find the commit and session with same timestamp
+	var commitIdx, sessionIdx int
+	for i, e := range entries {
+		if e.EntryType == timelineEntryCommit && e.Timestamp.Equal(sameTime) {
+			commitIdx = i
+		}
+		if e.EntryType == timelineEntrySession && e.Timestamp.Equal(sameTime) {
+			sessionIdx = i
+		}
+	}
+
+	// Commit should come before session on timestamp tie
+	if commitIdx >= sessionIdx {
+		t.Errorf("Commit (idx %d) should come before session (idx %d) on timestamp tie", commitIdx, sessionIdx)
+	}
+}
+
+func TestBuildTimelineWithoutSessions(t *testing.T) {
+	theme := testTheme()
+	now := time.Now()
+
+	history := correlation.BeadHistory{
+		BeadID: "bv-nosess",
+		Title:  "No Sessions",
+		Status: "open",
+		Milestones: correlation.BeadMilestones{
+			Created: &correlation.BeadEvent{
+				Timestamp: now.Add(-24 * time.Hour),
+			},
+		},
+		Commits: []correlation.CorrelatedCommit{
+			{
+				ShortSHA:   "abc1234",
+				Message:    "Some work",
+				Timestamp:  now,
+				Confidence: 0.80,
+			},
+		},
+	}
+
+	report := &correlation.HistoryReport{
+		Histories: map[string]correlation.BeadHistory{
+			"bv-nosess": history,
+		},
+	}
+	h := NewHistoryModel(report, theme)
+
+	// Don't set any sessions - graceful degradation
+
+	entries := h.buildTimeline(history)
+
+	// Should still work: created, commit = 2 entries
+	if len(entries) != 2 {
+		t.Errorf("buildTimeline() without sessions returned %d entries, want 2", len(entries))
+	}
+
+	// No session entries
+	for _, e := range entries {
+		if e.EntryType == timelineEntrySession {
+			t.Error("Should not have session entries when none cached")
+		}
+	}
+}
+
+func TestCapitalizeFirst(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"claude", "Claude"},
+		{"cursor", "Cursor"},
+		{"windsurf", "Windsurf"},
+		{"", ""},
+		{"A", "A"},
+		{"abc123", "Abc123"},
+	}
+
+	for _, tt := range tests {
+		got := capitalizeFirst(tt.input)
+		if got != tt.want {
+			t.Errorf("capitalizeFirst(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestFormatDuration(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1672,4 +1960,131 @@ func TestRenderCompactTimeline(t *testing.T) {
 // Helper to create duration pointer
 func durationPtr(d time.Duration) *time.Duration {
 	return &d
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// View Mode Toggle Animation Tests (bv-kvlx)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestHistoryModel_ToggleViewMode_SetsTimestamp(t *testing.T) {
+	report := createTestHistoryReport()
+	theme := testTheme()
+	h := NewHistoryModel(report, theme)
+
+	// Initially modeChangedAt should be zero
+	if !h.modeChangedAt.IsZero() {
+		t.Error("Expected modeChangedAt to be zero initially")
+	}
+
+	// Toggle view mode
+	before := time.Now()
+	h.ToggleViewMode()
+	after := time.Now()
+
+	// modeChangedAt should be set
+	if h.modeChangedAt.IsZero() {
+		t.Error("Expected modeChangedAt to be set after toggle")
+	}
+
+	// Should be between before and after
+	if h.modeChangedAt.Before(before) || h.modeChangedAt.After(after) {
+		t.Errorf("modeChangedAt %v should be between %v and %v", h.modeChangedAt, before, after)
+	}
+}
+
+func TestHistoryModel_ModeIndicator_UsesIcons(t *testing.T) {
+	report := createTestHistoryReport()
+	theme := testTheme()
+	h := NewHistoryModel(report, theme)
+	h.width = 120
+	h.height = 40
+
+	// Test bead mode indicator
+	h.viewMode = historyModeBead
+	h.modeChangedAt = time.Time{} // Clear to avoid flash
+	header := h.renderHeader()
+
+	if !strings.Contains(header, "◈") {
+		t.Error("Expected ◈ icon for bead mode in header")
+	}
+	if !strings.Contains(header, "Beads") {
+		t.Error("Expected 'Beads' label in header")
+	}
+
+	// Test git mode indicator
+	h.viewMode = historyModeGit
+	h.modeChangedAt = time.Time{} // Clear to avoid flash
+	header = h.renderHeader()
+
+	if !strings.Contains(header, "◉") {
+		t.Error("Expected ◉ icon for git mode in header")
+	}
+	if !strings.Contains(header, "Git") {
+		t.Error("Expected 'Git' label in header")
+	}
+}
+
+func TestHistoryModel_ModeTransition_FlashEffect(t *testing.T) {
+	report := createTestHistoryReport()
+	theme := testTheme()
+	h := NewHistoryModel(report, theme)
+	h.width = 120
+	h.height = 40
+
+	// Set recent mode change (within 150ms)
+	h.modeChangedAt = time.Now()
+	header1 := h.renderHeader()
+
+	// Set old mode change (outside 150ms window)
+	h.modeChangedAt = time.Now().Add(-200 * time.Millisecond)
+	header2 := h.renderHeader()
+
+	// The headers should be different (flash vs no flash)
+	// Both contain the same text, but styling differs
+	// We verify by checking that both contain mode indicator
+	if !strings.Contains(header1, "◈") && !strings.Contains(header1, "◉") {
+		t.Error("Expected mode icon in header during transition")
+	}
+	if !strings.Contains(header2, "◈") && !strings.Contains(header2, "◉") {
+		t.Error("Expected mode icon in header after transition")
+	}
+}
+
+func TestHistoryModel_ViewModeToggle_PreservesIcon(t *testing.T) {
+	report := createTestHistoryReport()
+	theme := testTheme()
+	h := NewHistoryModel(report, theme)
+	h.width = 120
+	h.height = 40
+
+	// Start in bead mode
+	if h.IsGitMode() {
+		t.Error("Expected to start in bead mode")
+	}
+
+	// Toggle to git mode
+	h.ToggleViewMode()
+	if !h.IsGitMode() {
+		t.Error("Expected to be in git mode after toggle")
+	}
+
+	// Clear transition flash
+	h.modeChangedAt = time.Time{}
+	header := h.renderHeader()
+	if !strings.Contains(header, "◉") {
+		t.Error("Expected ◉ icon for git mode")
+	}
+
+	// Toggle back to bead mode
+	h.ToggleViewMode()
+	if h.IsGitMode() {
+		t.Error("Expected to be in bead mode after second toggle")
+	}
+
+	// Clear transition flash
+	h.modeChangedAt = time.Time{}
+	header = h.renderHeader()
+	if !strings.Contains(header, "◈") {
+		t.Error("Expected ◈ icon for bead mode")
+	}
 }

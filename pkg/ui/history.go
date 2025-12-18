@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/cass"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
@@ -71,8 +72,9 @@ const (
 type timelineEntryType int
 
 const (
-	timelineEntryEvent  timelineEntryType = iota // Lifecycle event (created, claimed, closed)
-	timelineEntryCommit                          // Code commit
+	timelineEntryEvent   timelineEntryType = iota // Lifecycle event (created, claimed, closed)
+	timelineEntryCommit                           // Code commit
+	timelineEntrySession                          // Cass coding session (bv-pr1l)
 )
 
 // TimelineEntry represents a single entry in the timeline visualization (bv-1x6o)
@@ -83,6 +85,12 @@ type TimelineEntry struct {
 	Detail     string  // Full message or event detail
 	Confidence float64 // For commits: correlation confidence (0-1)
 	EventType  string  // For events: "created", "claimed", "closed", etc.
+
+	// Session fields (bv-pr1l)
+	SessionAgent        string  // For sessions: "claude", "cursor", etc.
+	SessionMessageCount int     // For sessions: number of messages in session
+	SessionPath         string  // For sessions: path to session file
+	SessionScore        float64 // For sessions: correlation score
 }
 
 // FileTreeNode represents a node in the file tree (bv-190l)
@@ -149,6 +157,12 @@ type HistoryModel struct {
 	fileTreeScroll  int             // Scroll offset for file tree
 	fileFilter      string          // Current file filter (empty = no filter)
 	fileTreeFocus   bool            // True when file tree has focus
+
+	// Cass session integration state (bv-pr1l)
+	sessionCache map[string][]cass.ScoredResult // Cached sessions per bead ID
+
+	// View mode transition state (bv-kvlx)
+	modeChangedAt time.Time // Timestamp of last mode toggle for transition animation
 }
 
 // NewHistoryModel creates a new history view from a correlation report
@@ -167,6 +181,7 @@ func NewHistoryModel(report *correlation.HistoryReport, theme Theme) HistoryMode
 		expandedBeads: make(map[string]bool),
 		searchInput:   ti,
 		searchMode:    searchModeOff,
+		sessionCache:  make(map[string][]cass.ScoredResult), // bv-pr1l
 	}
 	h.rebuildFilteredList()
 	return h
@@ -176,6 +191,37 @@ func NewHistoryModel(report *correlation.HistoryReport, theme Theme) HistoryMode
 func (h *HistoryModel) SetReport(report *correlation.HistoryReport) {
 	h.report = report
 	h.rebuildFilteredList()
+}
+
+// SetSessionsForBead stores correlated sessions for a bead in the cache (bv-pr1l)
+// This is called when sessions are loaded asynchronously from the main model.
+func (h *HistoryModel) SetSessionsForBead(beadID string, sessions []cass.ScoredResult) {
+	if h.sessionCache == nil {
+		h.sessionCache = make(map[string][]cass.ScoredResult)
+	}
+	h.sessionCache[beadID] = sessions
+}
+
+// HasSessionsForBead returns true if sessions are cached for the given bead (bv-pr1l)
+func (h *HistoryModel) HasSessionsForBead(beadID string) bool {
+	if h.sessionCache == nil {
+		return false
+	}
+	_, ok := h.sessionCache[beadID]
+	return ok
+}
+
+// GetSessionsForBead returns cached sessions for a bead (bv-pr1l)
+func (h *HistoryModel) GetSessionsForBead(beadID string) []cass.ScoredResult {
+	if h.sessionCache == nil {
+		return nil
+	}
+	return h.sessionCache[beadID]
+}
+
+// ClearSessionCache clears all cached sessions (bv-pr1l)
+func (h *HistoryModel) ClearSessionCache() {
+	h.sessionCache = make(map[string][]cass.ScoredResult)
 }
 
 // rebuildFilteredList rebuilds the filtered and sorted list of histories
@@ -917,6 +963,9 @@ func (h *HistoryModel) GetSearchModeName() string {
 
 // ToggleViewMode switches between Bead mode and Git mode
 func (h *HistoryModel) ToggleViewMode() {
+	// Track mode change time for transition animation (bv-kvlx)
+	h.modeChangedAt = time.Now()
+
 	if h.viewMode == historyModeBead {
 		h.viewMode = historyModeGit
 		h.buildCommitList()
@@ -1370,12 +1419,40 @@ func (h *HistoryModel) buildTimeline(hist correlation.BeadHistory) []TimelineEnt
 		})
 	}
 
-	// Sort chronologically
+	// Add sessions from cache if available (bv-pr1l)
+	if sessions, ok := h.sessionCache[hist.BeadID]; ok {
+		for _, session := range sessions {
+			entries = append(entries, TimelineEntry{
+				Timestamp:           session.Timestamp,
+				EntryType:           timelineEntrySession,
+				Label:               fmt.Sprintf("📎 %s session", capitalizeFirst(session.Agent)),
+				Detail:              session.Title,
+				SessionAgent:        session.Agent,
+				SessionMessageCount: 0, // Message count not available from SearchResult
+				SessionPath:         session.SourcePath,
+				SessionScore:        session.FinalScore,
+			})
+		}
+	}
+
+	// Sort chronologically, with commits before sessions on timestamp ties
 	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Timestamp.Equal(entries[j].Timestamp) {
+			// On ties: events first, then commits, then sessions
+			return entries[i].EntryType < entries[j].EntryType
+		}
 		return entries[i].Timestamp.Before(entries[j].Timestamp)
 	})
 
 	return entries
+}
+
+// capitalizeFirst capitalizes the first letter of a string (bv-pr1l)
+func capitalizeFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 // formatTimelineTimestamp formats a timestamp for the timeline (bv-1x6o)
@@ -1479,7 +1556,8 @@ func (h *HistoryModel) renderTimelinePanel(width, height int) string {
 			b.WriteString(r.NewStyle().Foreground(lineColor).Render(" ┃ "))
 
 			// Entry content
-			if entry.EntryType == timelineEntryEvent {
+			switch entry.EntryType {
+			case timelineEntryEvent:
 				// Event marker with appropriate color
 				var eventColor lipgloss.TerminalColor
 				switch entry.EventType {
@@ -1504,7 +1582,8 @@ func (h *HistoryModel) renderTimelinePanel(width, height int) string {
 					detail := truncateRunesHelper(entry.Detail, maxDetail, "...")
 					b.WriteString(detailStyle.Render(detail))
 				}
-			} else {
+
+			case timelineEntryCommit:
 				// Commit with confidence coloring
 				var confColor lipgloss.TerminalColor
 				if entry.Confidence >= 0.8 {
@@ -1534,6 +1613,31 @@ func (h *HistoryModel) renderTimelinePanel(width, height int) string {
 					b.WriteString(r.NewStyle().Foreground(lineColor).Render(" ┃   "))
 					msgStyle := r.NewStyle().Foreground(t.Subtext).Italic(true)
 					b.WriteString(msgStyle.Render(msg))
+				}
+
+			case timelineEntrySession:
+				// Session entry with score-based coloring (bv-pr1l)
+				var sessionColor lipgloss.TerminalColor
+				if entry.SessionScore >= 80 {
+					sessionColor = t.Primary // High relevance - primary color
+				} else if entry.SessionScore >= 50 {
+					sessionColor = t.InProgress // Medium relevance
+				} else {
+					sessionColor = t.Subtext // Lower relevance
+				}
+				sessionStyle := r.NewStyle().Foreground(sessionColor).Bold(true)
+				b.WriteString(sessionStyle.Render(entry.Label))
+
+				// Show detail (session title) if available
+				if entry.Detail != "" {
+					b.WriteString("\n")
+					b.WriteString(timestampStyle.Render(""))
+					b.WriteString(r.NewStyle().Foreground(lineColor).Render(" ┃   "))
+					// Truncate title if needed
+					maxTitle := width - 16
+					title := truncateRunesHelper(entry.Detail, maxTitle, "...")
+					titleStyle := r.NewStyle().Foreground(t.Subtext).Italic(true)
+					b.WriteString(titleStyle.Render(title))
 				}
 			}
 		}
@@ -1693,18 +1797,36 @@ func (h *HistoryModel) renderHeader() string {
 		Foreground(t.Primary).
 		Padding(0, 1)
 
-	// Show view mode indicator (bv-tl3n)
-	var modeIndicator string
+	// Show view mode indicator with icons (bv-tl3n, bv-kvlx)
+	// Icons: ◉ for git-centric (commits), ◈ for bead-centric (beads)
+	var modeIcon, modeLabel string
 	if h.viewMode == historyModeGit {
-		modeIndicator = "[Git Mode]"
+		modeIcon = "◉"
+		modeLabel = "Git"
 	} else {
-		modeIndicator = "[Bead Mode]"
+		modeIcon = "◈"
+		modeLabel = "Beads"
 	}
+
+	// Check for transition flash effect (bv-kvlx)
+	// Show highlight for 150ms after mode toggle
+	isTransitioning := !h.modeChangedAt.IsZero() && time.Since(h.modeChangedAt) <= 150*time.Millisecond
+
 	modeStyle := t.Renderer.NewStyle().
-		Foreground(t.InProgress).
 		Bold(true).
 		Padding(0, 1)
 
+	if isTransitioning {
+		// Flash effect: bright background with contrasting text
+		modeStyle = modeStyle.
+			Background(t.Primary).
+			Foreground(lipgloss.AdaptiveColor{Light: "#ffffff", Dark: "#1a1a2e"})
+	} else {
+		// Normal mode: just colored text
+		modeStyle = modeStyle.Foreground(t.InProgress)
+	}
+
+	modeIndicator := fmt.Sprintf("%s %s", modeIcon, modeLabel)
 	title := titleStyle.Render("HISTORY") + modeStyle.Render(modeIndicator)
 
 	// Search input or close hint (bv-nkrj)
