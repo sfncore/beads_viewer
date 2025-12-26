@@ -119,12 +119,13 @@ const (
 	StatusInProgress Status = "in_progress"
 	StatusBlocked    Status = "blocked"
 	StatusClosed     Status = "closed"
+	StatusTombstone  Status = "tombstone"
 )
 
 // IsValid returns true if the status is a recognized value
 func (s Status) IsValid() bool {
 	switch s {
-	case StatusOpen, StatusInProgress, StatusBlocked, StatusClosed:
+	case StatusOpen, StatusInProgress, StatusBlocked, StatusClosed, StatusTombstone:
 		return true
 	}
 	return false
@@ -138,6 +139,11 @@ func (s Status) IsClosed() bool {
 // IsOpen returns true if the status represents an active (open or in_progress) state
 func (s Status) IsOpen() bool {
 	return s == StatusOpen || s == StatusInProgress
+}
+
+// IsTombstone returns true if the status represents a permanently deleted/archived state
+func (s Status) IsTombstone() bool {
+	return s == StatusTombstone
 }
 
 // IssueType categorizes the kind of work

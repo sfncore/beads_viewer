@@ -278,7 +278,8 @@ type Model struct {
 	updateURL       string
 
 	// Focus and View State
-	focused                  focus
+	focused         focus
+	focusBeforeHelp focus // Stores focus before opening help overlay
 	isSplitView              bool
 	isBoardView              bool
 	isGraphView              bool
@@ -1620,10 +1621,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if (msg.String() == "?" || msg.String() == "f1") && m.list.FilterState() != list.Filtering {
 			m.showHelp = !m.showHelp
 			if m.showHelp {
+				m.focusBeforeHelp = m.focused // Store current focus before switching to help
 				m.focused = focusHelp
 				m.helpScroll = 0 // Reset scroll position when opening help
 			} else {
-				m.focused = focusList
+				m.focused = m.restoreFocusFromHelp()
 			}
 			return m, nil
 		}
@@ -1807,6 +1809,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// q closes current view or quits if at top level
 				if m.showDetails && !m.isSplitView {
 					m.showDetails = false
+					m.focused = focusList
 					return m, nil
 				}
 				if m.focused == focusInsights {
@@ -1837,6 +1840,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Escape closes modals and goes back
 				if m.showDetails && !m.isSplitView {
 					m.showDetails = false
+					m.focused = focusList
 					return m, nil
 				}
 				if m.focused == focusInsights {
@@ -2562,6 +2566,8 @@ func (m Model) handleBoardKeys(msg tea.KeyMsg) Model {
 				m.focused = focusDetail
 			} else {
 				m.showDetails = true
+				m.focused = focusDetail
+				m.viewport.GotoTop()
 			}
 			m.updateViewportContent()
 		}
@@ -2603,6 +2609,8 @@ func (m Model) handleGraphKeys(msg tea.KeyMsg) Model {
 				m.focused = focusDetail
 			} else {
 				m.showDetails = true
+				m.focused = focusDetail
+				m.viewport.GotoTop()
 			}
 			m.updateViewportContent()
 		}
@@ -2633,6 +2641,8 @@ func (m Model) handleActionableKeys(msg tea.KeyMsg) Model {
 				m.focused = focusDetail
 			} else {
 				m.showDetails = true
+				m.focused = focusDetail
+				m.viewport.GotoTop()
 			}
 			m.updateViewportContent()
 		}
@@ -2791,6 +2801,8 @@ func (m Model) handleHistoryKeys(msg tea.KeyMsg) Model {
 				m.focused = focusDetail
 			} else {
 				m.showDetails = true
+				m.focused = focusDetail
+				m.viewport.GotoTop()
 			}
 			m.updateViewportContent()
 		}
@@ -3010,6 +3022,8 @@ func (m Model) handleFlowMatrixKeys(msg tea.KeyMsg) Model {
 					m.focused = focusDetail
 				} else {
 					m.showDetails = true
+					m.focused = focusDetail
+					m.viewport.GotoTop()
 				}
 				m.updateViewportContent()
 			}
@@ -3156,6 +3170,8 @@ func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 				m.focused = focusDetail
 			} else {
 				m.showDetails = true
+				m.focused = focusDetail
+				m.viewport.GotoTop()
 			}
 			m.updateViewportContent()
 		}
@@ -3169,6 +3185,8 @@ func (m Model) handleListKeys(msg tea.KeyMsg) Model {
 	case "enter":
 		if !m.isSplitView {
 			m.showDetails = true
+			m.focused = focusDetail
+			m.viewport.GotoTop() // Reset scroll position for new issue
 			m.updateViewportContent()
 		}
 	case "home":
@@ -3280,6 +3298,48 @@ func (m Model) handleTimeTravelInputKeys(msg tea.KeyMsg) Model {
 	return m
 }
 
+// restoreFocusFromHelp returns the appropriate focus based on current view state.
+// This fixes the bug where dismissing help would always return to focusList,
+// even when the user was in a specialized view (graph, board, insights, etc.).
+func (m Model) restoreFocusFromHelp() focus {
+	// Full-screen detail view (not split mode)
+	if m.showDetails && !m.isSplitView {
+		return focusDetail
+	}
+	// Specialized views take precedence
+	if m.isGraphView {
+		return focusGraph
+	}
+	if m.isBoardView {
+		return focusBoard
+	}
+	if m.isActionableView {
+		return focusActionable
+	}
+	if m.isHistoryView {
+		return focusHistory
+	}
+	// Check for other focus states using stored focusBeforeHelp
+	// (m.focused is focusHelp while help is open, so we use the saved value)
+	if m.focusBeforeHelp == focusInsights {
+		return focusInsights
+	}
+	if m.focusBeforeHelp == focusLabelDashboard {
+		return focusLabelDashboard
+	}
+	if m.focusBeforeHelp == focusSprint {
+		return focusSprint
+	}
+	if m.focusBeforeHelp == focusFlowMatrix {
+		return focusFlowMatrix
+	}
+	if m.focusBeforeHelp == focusAttention {
+		return focusAttention
+	}
+	// Default: return to list
+	return focusList
+}
+
 // handleHelpKeys handles keyboard input when the help overlay is focused
 func (m Model) handleHelpKeys(msg tea.KeyMsg) Model {
 	switch msg.String() {
@@ -3302,10 +3362,10 @@ func (m Model) handleHelpKeys(msg tea.KeyMsg) Model {
 		// Will be clamped in render
 		m.helpScroll = 999
 	case "q", "esc", "?", "f1":
-		// Close help overlay
+		// Close help overlay and restore previous focus
 		m.showHelp = false
 		m.helpScroll = 0
-		m.focused = focusList
+		m.focused = m.restoreFocusFromHelp()
 	case " ": // Space opens interactive tutorial (bv-0trk, bv-8y31)
 		m.showHelp = false
 		m.helpScroll = 0
@@ -3313,10 +3373,10 @@ func (m Model) handleHelpKeys(msg tea.KeyMsg) Model {
 		m.tutorialModel.SetSize(m.width, m.height)
 		m.focused = focusTutorial
 	default:
-		// Any other key dismisses help
+		// Any other key dismisses help and restores previous focus
 		m.showHelp = false
 		m.helpScroll = 0
-		m.focused = focusList
+		m.focused = m.restoreFocusFromHelp()
 	}
 	return m
 }
@@ -5192,6 +5252,12 @@ func (m *Model) updateViewportContent() {
 	if item.Description != "" {
 		sb.WriteString("### Description\n")
 		sb.WriteString(item.Description + "\n\n")
+	}
+
+	// Design Notes
+	if item.Design != "" {
+		sb.WriteString("### Design Notes\n")
+		sb.WriteString(item.Design + "\n\n")
 	}
 
 	// Acceptance Criteria
