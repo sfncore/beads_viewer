@@ -506,7 +506,7 @@ flowchart LR
     INPUT["⌨️ Input<br/>Keys · Mouse · Resize"]:::core
     MODEL["🫖 Model<br/>Issues · Stats · Focus"]:::core
     GRAPH["🧮 Graph Engine<br/>PageRank · HITS · Cycles"]:::engine
-    VIEWS["🖼️ Views<br/>List · Board · Graph · Insights"]:::ui
+    VIEWS["🖼️ Views<br/>List · Board · Graph · Tree · Insights"]:::ui
     LAYOUT["📐 Layout<br/>Mobile · Split · Wide"]:::ui
     TERM["🖥️ Terminal<br/>60fps Output"]:::output
 
@@ -1364,6 +1364,110 @@ The sort system uses a **stable secondary sort** to ensure deterministic orderin
 ```
 
 The `[Created ↓]` badge instantly communicates the active sort mode without requiring you to remember which mode you're in.
+
+---
+
+## 🌲 Hierarchical Tree View: Parent-Child Visualization
+
+Press `E` to open the **Hierarchical Tree View**—a collapsible tree that visualizes parent-child relationships between issues. Unlike the Graph View which shows all dependency types, the Tree View focuses exclusively on **structural hierarchy**: which issues are "part of" other issues.
+
+### Why Parent-Child Matters
+
+In complex projects, issues often have two distinct relationship types:
+- **Blocking dependencies** (`blocks`/`blocked_by`): Task B cannot start until Task A completes
+- **Parent-child relationships** (`parent`): Feature X contains Tasks A, B, and C as sub-work
+
+The Tree View renders only parent-child relationships, creating a work breakdown structure (WBS) that answers questions like:
+- "What sub-tasks make up this epic?"
+- "Which feature does this bug belong to?"
+- "How is work decomposed across the project?"
+
+### Tree Layout
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  🌲 TREE VIEW                                           3 roots · 12 nodes  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ▾ 🎯 P1 EPIC-100   Auth System Overhaul                        ● open     │
+│  │ ├─ ▸ ✨ P1 FEAT-101   Implement OAuth2 flow                  ● open     │
+│  │ │   └─ • 📝 P2 TASK-102   Add token refresh logic            ○ closed   │
+│  │ └─ • 🐛 P0 BUG-103   Fix session timeout race               ⚠ blocked  │
+│  │                                                                          │
+│  ▾ 🎯 P2 EPIC-200   UI Polish Sprint                            ● open     │
+│  │ ├─ • ✨ P2 FEAT-201   Dark mode support                      ● open     │
+│  │ └─ • ✨ P3 FEAT-202   Responsive layout                      ● open     │
+│  │                                                                          │
+│  • 📝 P3 TASK-300   Update documentation                        ● open     │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Visual Encoding
+
+| Element | Meaning |
+|---------|---------|
+| **▾ / ▸** | Expanded / Collapsed (has children) |
+| **•** | Leaf node (no children) |
+| **├─ / └─** | Tree branch connectors |
+| **Type Icon** | 🎯 Epic, ✨ Feature, 🐛 Bug, 📝 Task, 🔧 Chore |
+| **Priority** | P0 (critical red), P1 (high), P2 (medium gray), P3+ (muted) |
+| **Status Dot** | ● Open (green), ◐ In Progress (yellow), ⚠ Blocked (red), ○ Closed (gray) |
+
+### Tree Building Algorithm
+
+The tree construction uses a **parent-child only** filter with intelligent root detection:
+
+1. **Filter Dependencies**: Only `DepParentChild` type dependencies are considered; blocking and related dependencies are ignored
+2. **Build Index**: Create a parent → children mapping for efficient traversal
+3. **Identify Roots**: Issues with no parent (or whose parent doesn't exist in the dataset) become root nodes
+4. **Recursive Build**: Depth-first traversal with cycle detection prevents infinite loops
+5. **Sort Children**: Within each parent, children are sorted by: Priority (ascending) → Type (epic > feature > bug > task) → Creation Date (newest first)
+
+**Handling Edge Cases:**
+- **Orphan References**: If an issue references a parent that doesn't exist, it becomes a root node (not silently dropped)
+- **Cycles**: Detected during traversal; cyclic nodes are rendered without recursing further
+- **Deep Hierarchies**: No depth limit—the tree faithfully represents arbitrarily nested structures
+
+### Tree Navigation
+
+| Key | Action |
+|-----|--------|
+| **Movement** | |
+| `j` / `k` / `↓` / `↑` | Move cursor down / up |
+| `g` / `G` | Jump to first / last node |
+| `Ctrl+D` / `Ctrl+U` | Page down / up (half viewport) |
+| **Expand/Collapse** | |
+| `Enter` / `Space` | Toggle expand/collapse on current node |
+| `l` / `→` | Expand node, or move to first child if already expanded |
+| `h` / `←` | Collapse node, or jump to parent if already collapsed |
+| `o` | Expand all nodes in the tree |
+| `O` | Collapse all nodes in the tree |
+| **Integration** | |
+| `Tab` | Sync selection to detail panel (in split view) |
+| `E` / `Esc` | Exit tree view, return to list |
+
+### Use Cases
+
+| Scenario | How Tree View Helps |
+|----------|---------------------|
+| **Sprint Planning** | Expand epics to see all sub-work and estimate scope |
+| **Progress Tracking** | Collapse completed branches, focus on open work |
+| **Onboarding** | New team members understand project structure at a glance |
+| **Refactoring** | See which tasks fall under a feature before restructuring |
+| **Status Meetings** | Walk through the hierarchy top-down for stakeholder updates |
+
+### Tree vs. Graph View
+
+| Aspect | Tree View (`E`) | Graph View (`g`) |
+|--------|-----------------|------------------|
+| **Relationships** | Parent-child only | All dependency types |
+| **Layout** | Indented hierarchy | Force-directed / DAG |
+| **Focus** | Work breakdown structure | Dependency flow |
+| **Navigation** | Vim-style (j/k/h/l) | Viewport panning |
+| **Best For** | "What's inside this epic?" | "What blocks this task?" |
+
+Both views complement each other: use Tree View to understand structure, Graph View to understand flow.
 
 ---
 
@@ -3009,7 +3113,7 @@ bv has a comprehensive built-in help system:
 
 **Interactive Tutorial** (`` ` `` backtick) - A multi-page walkthrough covering all features:
 - Concepts: beads, dependencies, labels, priorities
-- Views: list, board, graph, insights, history
+- Views: list, board, graph, tree, insights, history
 - Workflows: AI agent integration, triage, planning
 - Progress is automatically saved—resume where you left off
 
@@ -3034,6 +3138,7 @@ bv has a comprehensive built-in help system:
 | **Views** | `b` | Toggle **Kanban Board** |
 | | `i` | Toggle **Insights Dashboard** |
 | | `g` | Toggle **Graph Visualizer** |
+| | `E` | Toggle **Tree View** (parent-child hierarchy) |
 | | `a` | Toggle **Actionable Plan** |
 | | `h` | Toggle **History View** (bead-to-commit correlation) |
 | | `f` | Toggle **Flow Matrix** (cross-label dependencies) |
@@ -3048,6 +3153,11 @@ bv has a comprehensive built-in help system:
 | | `m` | Toggle Heatmap Overlay |
 | **Graph View** | `H` / `L` | Scroll Left / Right |
 | | `Ctrl+D` / `Ctrl+U` | Page Down / Up |
+| **Tree View** | `j` / `k` | Move cursor down / up |
+| | `h` / `l` | Collapse/parent or Expand/child |
+| | `Enter` / `Space` | Toggle expand/collapse |
+| | `o` / `O` | Expand all / Collapse all |
+| | `g` / `G` | Jump to top / bottom |
 | **Time-Travel & Analysis** | `t` | Time-Travel Mode (custom revision) |
 | | `T` | Quick Time-Travel (HEAD~5) |
 | | `p` | Toggle Priority Hints Overlay |
