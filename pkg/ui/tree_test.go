@@ -1167,3 +1167,162 @@ func TestLoadStateStaleIDs(t *testing.T) {
 		t.Error("Expected root to be collapsed (from state file)")
 	}
 }
+
+// =============================================================================
+// ensureCursorVisible tests (bv-lnc4)
+// =============================================================================
+
+// TestEnsureCursorVisible verifies the cursor-follows-viewport behavior
+func TestEnsureCursorVisible(t *testing.T) {
+	tests := []struct {
+		name             string
+		nodeCount        int
+		height           int
+		initialCursor    int
+		initialOffset    int
+		wantOffset       int
+	}{
+		{"cursor at start, offset at start", 100, 10, 0, 0, 0},
+		{"cursor in visible range", 100, 10, 5, 0, 0},
+		{"cursor below viewport - scroll down", 100, 10, 15, 0, 6},
+		{"cursor above viewport - scroll up", 100, 10, 0, 10, 0},
+		{"cursor at viewport bottom edge", 100, 10, 9, 0, 0},
+		{"cursor just past viewport bottom", 100, 10, 10, 0, 1},
+		{"cursor at end of list", 100, 10, 99, 0, 90},
+		{"offset already correct", 100, 10, 50, 45, 45},
+		{"empty list", 0, 10, 0, 0, 0},
+		{"single node", 1, 10, 0, 0, 0},
+		{"fewer nodes than viewport", 5, 10, 3, 0, 0},
+		{"zero height uses default 20", 100, 0, 25, 0, 6},
+		{"large cursor with max offset clamping", 100, 10, 95, 0, 86},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tree := NewTreeModel(testTheme())
+			tree.height = tt.height
+			tree.cursor = tt.initialCursor
+			tree.viewportOffset = tt.initialOffset
+
+			// Create fake flat list
+			tree.flatList = make([]*IssueTreeNode, tt.nodeCount)
+			for i := 0; i < tt.nodeCount; i++ {
+				tree.flatList[i] = &IssueTreeNode{
+					Issue: &model.Issue{ID: fmt.Sprintf("test-%d", i)},
+				}
+			}
+
+			tree.ensureCursorVisible()
+
+			if tree.viewportOffset != tt.wantOffset {
+				t.Errorf("ensureCursorVisible() offset = %d, want %d", tree.viewportOffset, tt.wantOffset)
+			}
+
+			// Verify cursor is now within visible range (unless empty)
+			if tt.nodeCount > 0 {
+				visibleCount := tt.height
+				if visibleCount <= 0 {
+					visibleCount = 20
+				}
+				if tree.cursor < tree.viewportOffset || tree.cursor >= tree.viewportOffset+visibleCount {
+					// This check needs adjustment for edge case where list is smaller than viewport
+					if tt.nodeCount > visibleCount && tree.cursor >= tree.viewportOffset+visibleCount {
+						t.Errorf("cursor %d not visible with offset %d and height %d",
+							tree.cursor, tree.viewportOffset, visibleCount)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestEnsureCursorVisibleNegativeOffset tests clamping of negative offset
+func TestEnsureCursorVisibleNegativeOffset(t *testing.T) {
+	tree := NewTreeModel(testTheme())
+	tree.height = 10
+	tree.cursor = 0
+	tree.viewportOffset = -5 // Invalid negative offset
+
+	tree.flatList = make([]*IssueTreeNode, 100)
+	for i := 0; i < 100; i++ {
+		tree.flatList[i] = &IssueTreeNode{
+			Issue: &model.Issue{ID: fmt.Sprintf("test-%d", i)},
+		}
+	}
+
+	tree.ensureCursorVisible()
+
+	if tree.viewportOffset < 0 {
+		t.Errorf("viewportOffset should be >= 0, got %d", tree.viewportOffset)
+	}
+}
+
+// TestNavigationCallsEnsureCursorVisible verifies navigation methods maintain visibility
+func TestNavigationCallsEnsureCursorVisible(t *testing.T) {
+	// Create many issues for testing scroll
+	var issues []model.Issue
+	for i := 0; i < 50; i++ {
+		issues = append(issues, model.Issue{
+			ID:        fmt.Sprintf("issue-%d", i),
+			Title:     fmt.Sprintf("Issue %d", i),
+			Priority:  2,
+			IssueType: model.TypeTask,
+		})
+	}
+
+	tree := NewTreeModel(testTheme())
+	tree.Build(issues)
+	tree.SetSize(80, 10) // Viewport of 10 lines
+
+	// Test MoveDown past viewport
+	for i := 0; i < 15; i++ {
+		tree.MoveDown()
+	}
+	// Cursor at 15, viewport should have scrolled
+	if tree.cursor != 15 {
+		t.Errorf("cursor should be 15, got %d", tree.cursor)
+	}
+	if tree.viewportOffset == 0 {
+		t.Error("viewportOffset should have scrolled down")
+	}
+	// Cursor should be visible
+	if tree.cursor < tree.viewportOffset || tree.cursor >= tree.viewportOffset+10 {
+		t.Errorf("cursor %d not visible with offset %d", tree.cursor, tree.viewportOffset)
+	}
+
+	// Test JumpToBottom
+	tree.JumpToBottom()
+	if tree.cursor != 49 {
+		t.Errorf("cursor should be 49 after JumpToBottom, got %d", tree.cursor)
+	}
+	// Cursor should still be visible
+	if tree.cursor < tree.viewportOffset || tree.cursor >= tree.viewportOffset+10 {
+		t.Errorf("cursor %d not visible after JumpToBottom with offset %d", tree.cursor, tree.viewportOffset)
+	}
+
+	// Test JumpToTop
+	tree.JumpToTop()
+	if tree.cursor != 0 {
+		t.Errorf("cursor should be 0 after JumpToTop, got %d", tree.cursor)
+	}
+	if tree.viewportOffset != 0 {
+		t.Errorf("viewportOffset should be 0 after JumpToTop, got %d", tree.viewportOffset)
+	}
+
+	// Test PageDown
+	tree.PageDown()
+	// Cursor should be visible
+	if tree.cursor < tree.viewportOffset || tree.cursor >= tree.viewportOffset+10 {
+		t.Errorf("cursor %d not visible after PageDown with offset %d", tree.cursor, tree.viewportOffset)
+	}
+}
+
+// TestGetViewportOffset tests the accessor method
+func TestGetViewportOffset(t *testing.T) {
+	tree := NewTreeModel(testTheme())
+	tree.viewportOffset = 42
+
+	if got := tree.GetViewportOffset(); got != 42 {
+		t.Errorf("GetViewportOffset() = %d, want 42", got)
+	}
+}

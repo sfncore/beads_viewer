@@ -672,6 +672,7 @@ func (t *TreeModel) SelectedNode() *IssueTreeNode {
 func (t *TreeModel) MoveDown() {
 	if t.cursor < len(t.flatList)-1 {
 		t.cursor++
+		t.ensureCursorVisible()
 	}
 }
 
@@ -679,6 +680,7 @@ func (t *TreeModel) MoveDown() {
 func (t *TreeModel) MoveUp() {
 	if t.cursor > 0 {
 		t.cursor--
+		t.ensureCursorVisible()
 	}
 }
 
@@ -689,6 +691,7 @@ func (t *TreeModel) ToggleExpand() {
 		node.Expanded = !node.Expanded
 		t.rebuildFlatList()
 		t.saveState() // Persist expand/collapse state (bv-19vz)
+		t.ensureCursorVisible()
 	}
 }
 
@@ -699,6 +702,7 @@ func (t *TreeModel) ExpandAll() {
 	}
 	t.rebuildFlatList()
 	t.saveState() // Persist expand/collapse state (bv-19vz)
+	t.ensureCursorVisible()
 }
 
 // CollapseAll collapses all nodes in the tree.
@@ -708,17 +712,20 @@ func (t *TreeModel) CollapseAll() {
 	}
 	t.rebuildFlatList()
 	t.saveState() // Persist expand/collapse state (bv-19vz)
+	t.ensureCursorVisible()
 }
 
 // JumpToTop moves cursor to the first node.
 func (t *TreeModel) JumpToTop() {
 	t.cursor = 0
+	t.ensureCursorVisible()
 }
 
 // JumpToBottom moves cursor to the last node.
 func (t *TreeModel) JumpToBottom() {
 	if len(t.flatList) > 0 {
 		t.cursor = len(t.flatList) - 1
+		t.ensureCursorVisible()
 	}
 }
 
@@ -734,6 +741,7 @@ func (t *TreeModel) JumpToParent() {
 	for i, n := range t.flatList {
 		if n == node.Parent {
 			t.cursor = i
+			t.ensureCursorVisible()
 			return
 		}
 	}
@@ -754,12 +762,14 @@ func (t *TreeModel) ExpandOrMoveToChild() {
 		node.Expanded = true
 		t.rebuildFlatList()
 		t.saveState() // Persist expand/collapse state (bv-19vz)
+		t.ensureCursorVisible()
 	} else {
 		// Move to first child
 		// Find first child in flatList (should be right after current node)
 		for i, n := range t.flatList {
 			if n == node.Children[0] {
 				t.cursor = i
+				t.ensureCursorVisible()
 				return
 			}
 		}
@@ -780,8 +790,9 @@ func (t *TreeModel) CollapseOrJumpToParent() {
 		node.Expanded = false
 		t.rebuildFlatList()
 		t.saveState() // Persist expand/collapse state (bv-19vz)
+		t.ensureCursorVisible()
 	} else {
-		// Jump to parent
+		// Jump to parent (already calls ensureCursorVisible)
 		t.JumpToParent()
 	}
 }
@@ -799,6 +810,7 @@ func (t *TreeModel) PageDown() {
 	if t.cursor < 0 {
 		t.cursor = 0
 	}
+	t.ensureCursorVisible()
 }
 
 // PageUp moves cursor up by half a viewport.
@@ -811,6 +823,7 @@ func (t *TreeModel) PageUp() {
 	if t.cursor < 0 {
 		t.cursor = 0
 	}
+	t.ensureCursorVisible()
 }
 
 // visibleRange returns the start and end indices of nodes to render (bv-r4ng).
@@ -921,4 +934,46 @@ func (t *TreeModel) NodeCount() int {
 // RootCount returns the number of root nodes.
 func (t *TreeModel) RootCount() int {
 	return len(t.roots)
+}
+
+// ensureCursorVisible adjusts viewportOffset so the cursor is visible (bv-lnc4).
+// This method should be called after any cursor movement to maintain
+// cursor-follows-viewport behavior. It implements cursor-at-edge scrolling:
+// the viewport scrolls just enough to keep the cursor visible.
+func (t *TreeModel) ensureCursorVisible() {
+	if len(t.flatList) == 0 {
+		return
+	}
+
+	visibleCount := t.height
+	if visibleCount <= 0 {
+		visibleCount = 20 // Default
+	}
+
+	// Cursor above viewport - scroll up to show cursor at top
+	if t.cursor < t.viewportOffset {
+		t.viewportOffset = t.cursor
+	}
+
+	// Cursor below viewport - scroll down to show cursor at bottom
+	if t.cursor >= t.viewportOffset+visibleCount {
+		t.viewportOffset = t.cursor - visibleCount + 1
+	}
+
+	// Clamp offset to valid range
+	maxOffset := len(t.flatList) - visibleCount
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if t.viewportOffset > maxOffset {
+		t.viewportOffset = maxOffset
+	}
+	if t.viewportOffset < 0 {
+		t.viewportOffset = 0
+	}
+}
+
+// GetViewportOffset returns the current viewport offset (for testing/debugging).
+func (t *TreeModel) GetViewportOffset() int {
+	return t.viewportOffset
 }
