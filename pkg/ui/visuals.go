@@ -127,19 +127,20 @@ func GetHeatGradientColorBg(intensity float64) (bg lipgloss.Color, fg lipgloss.C
 }
 
 // RepoColors maps repo prefixes to distinctive colors for visual differentiation
-var RepoColors = []lipgloss.Color{
-	lipgloss.Color("#FF6B6B"), // Coral red
-	lipgloss.Color("#4ECDC4"), // Teal
-	lipgloss.Color("#45B7D1"), // Sky blue
-	lipgloss.Color("#96CEB4"), // Sage green
-	lipgloss.Color("#DDA0DD"), // Plum
-	lipgloss.Color("#F7DC6F"), // Gold
-	lipgloss.Color("#BB8FCE"), // Lavender
-	lipgloss.Color("#85C1E9"), // Light blue
+// These colors are designed to be visible on both light and dark backgrounds
+var RepoColors = []lipgloss.AdaptiveColor{
+	{Light: "#CC5555", Dark: "#FF6B6B"}, // Coral red
+	{Light: "#3BA89E", Dark: "#4ECDC4"}, // Teal
+	{Light: "#3891A6", Dark: "#45B7D1"}, // Sky blue
+	{Light: "#6B9E87", Dark: "#96CEB4"}, // Sage green
+	{Light: "#AA7AAA", Dark: "#DDA0DD"}, // Plum
+	{Light: "#C4A93D", Dark: "#F7DC6F"}, // Gold
+	{Light: "#9370A8", Dark: "#BB8FCE"}, // Lavender
+	{Light: "#5A9BC2", Dark: "#85C1E9"}, // Light blue
 }
 
 // GetRepoColor returns a consistent color for a repo prefix based on hash
-func GetRepoColor(prefix string) lipgloss.Color {
+func GetRepoColor(prefix string) lipgloss.AdaptiveColor {
 	if prefix == "" {
 		return ColorMuted
 	}

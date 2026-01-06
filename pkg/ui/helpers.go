@@ -271,7 +271,7 @@ func GetAgeDays(t time.Time) int {
 
 // GetAgeColor returns a color based on staleness:
 // green (<7 days), yellow (7-30 days), red (>30 days)
-func GetAgeColor(t time.Time) lipgloss.Color {
+func GetAgeColor(t time.Time) lipgloss.AdaptiveColor {
 	days := GetAgeDays(t)
 	switch {
 	case days < 7:
