@@ -294,6 +294,7 @@ type TriageOptions struct {
 	QuickWinN     int  // Number of quick wins (default 5)
 	BlockerN      int  // Number of blockers to show (default 5)
 	WaitForPhase2 bool // Block until Phase 2 metrics ready
+	UseFastConfig bool // Use TriageConfig for faster Phase 2 (bv-t1js optimization)
 
 	// bv-87: Track/label-aware recommendation grouping for multi-agent coordination
 	GroupByTrack bool // Group recommendations by execution track (connected component)
@@ -328,7 +329,14 @@ func ComputeTriageWithOptions(issues []model.Issue, opts TriageOptions) TriageRe
 func ComputeTriageWithOptionsAndTime(issues []model.Issue, opts TriageOptions, now time.Time) TriageResult {
 	// Build analyzer and stats
 	analyzer := NewAnalyzer(issues)
-	stats := analyzer.AnalyzeAsync(context.Background())
+
+	// Use fast config for triage-only analysis (bv-t1js optimization)
+	var stats *GraphStats
+	if opts.UseFastConfig {
+		stats = analyzer.AnalyzeAsyncWithConfig(context.Background(), TriageConfig())
+	} else {
+		stats = analyzer.AnalyzeAsync(context.Background())
+	}
 
 	// Triage requires advanced metrics (PageRank, etc.) for scoring.
 	// If requested, wait for Phase 2 to complete.
@@ -385,7 +393,8 @@ func ComputeTriageFromAnalyzer(analyzer *Analyzer, stats *GraphStats, issues []m
 	triageScores := computeTriageScoresFromImpact(impactScores, unblocksMap, analyzer, DefaultTriageScoringOptions())
 
 	// Build recommendations using enhanced scores (bv-148)
-	recommendations := buildRecommendationsFromTriageScores(triageScores, analyzer, unblocksMap, opts.TopN)
+	// Pass triageCtx instead of analyzer for cached blocker lookups (bv-k4az)
+	recommendations := buildRecommendationsFromTriageScores(triageScores, triageCtx, opts.TopN)
 
 	// Build quick wins
 	quickWins := buildQuickWins(impactScores, unblocksMap, opts.QuickWinN)
@@ -588,11 +597,15 @@ func computeCountsWithContext(issues []model.Issue, ctx *TriageContext) HealthCo
 	return counts
 }
 
-// buildRecommendationsFromTriageScores creates recommendations using enhanced triage scores
-func buildRecommendationsFromTriageScores(scores []TriageScore, analyzer *Analyzer, unblocksMap map[string][]string, limit int) []Recommendation {
+// buildRecommendationsFromTriageScores creates recommendations using enhanced triage scores.
+// Uses TriageContext for cached blocker lookups (bv-k4az optimization).
+func buildRecommendationsFromTriageScores(scores []TriageScore, ctx *TriageContext, limit int) []Recommendation {
 	if len(scores) > limit {
 		scores = scores[:limit]
 	}
+
+	analyzer := ctx.Analyzer()
+	unblocksMap := ctx.UnblocksMap()
 
 	recommendations := make([]Recommendation, 0, len(scores))
 	for _, score := range scores {
@@ -601,11 +614,11 @@ func buildRecommendationsFromTriageScores(scores []TriageScore, analyzer *Analyz
 			continue
 		}
 
-		// Generate reasons using the new logic
-		reasons := GenerateTriageReasonsForScore(score, analyzer, unblocksMap)
+		// Generate reasons using the new logic (cached via TriageContext)
+		reasons := GenerateTriageReasonsForScore(score, ctx)
 
-		// Get blocked by
-		blockedBy := analyzer.GetOpenBlockers(score.IssueID)
+		// Get blocked by (cached via TriageContext)
+		blockedBy := ctx.OpenBlockers(score.IssueID)
 
 		rec := Recommendation{
 			ID:          score.IssueID,
@@ -1332,9 +1345,11 @@ func formatUnblockList(ids []string) string {
 	return fmt.Sprintf("%s, %s, +%d more", ids[0], ids[1], len(ids)-2)
 }
 
-// GenerateTriageReasonsForScore generates reasons from a TriageScore and Analyzer context
-// This is a convenience function for common use cases
-func GenerateTriageReasonsForScore(score TriageScore, analyzer *Analyzer, unblocksMap map[string][]string) TriageReasons {
+// GenerateTriageReasonsForScore generates reasons from a TriageScore and TriageContext.
+// Uses cached blocker lookups for better performance (bv-k4az optimization).
+func GenerateTriageReasonsForScore(score TriageScore, triageCtx *TriageContext) TriageReasons {
+	analyzer := triageCtx.Analyzer()
+	unblocksMap := triageCtx.UnblocksMap()
 	issue := analyzer.GetIssue(score.IssueID)
 
 	daysSinceUpdate := 0
@@ -1349,10 +1364,10 @@ func GenerateTriageReasonsForScore(score TriageScore, analyzer *Analyzer, unbloc
 		Issue:           issue,
 		TriageScore:     &score,
 		UnblocksIDs:     unblocksMap[score.IssueID],
-		BlockedByIDs:    analyzer.GetOpenBlockers(score.IssueID),
+		BlockedByIDs:    triageCtx.OpenBlockers(score.IssueID),   // cached
 		DaysSinceUpdate: daysSinceUpdate,
 		IsQuickWin:      isQuickWin,
-		BlockerDepth:    analyzer.GetBlockerDepth(score.IssueID),
+		BlockerDepth:    triageCtx.BlockerDepth(score.IssueID), // cached
 	}
 
 	return GenerateTriageReasons(ctx)

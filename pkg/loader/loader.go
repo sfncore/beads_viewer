@@ -3,12 +3,13 @@ package loader
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	json "github.com/goccy/go-json"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )

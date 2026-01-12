@@ -962,7 +962,7 @@ func TestGenerateTriageReasonsForScore(t *testing.T) {
 	}
 
 	analyzer := NewAnalyzer(issues)
-	unblocksMap := buildUnblocksMap(analyzer, issues)
+	triageCtx := NewTriageContext(analyzer)
 
 	// Get triage scores
 	scores := ComputeTriageScores(issues)
@@ -976,7 +976,7 @@ func TestGenerateTriageReasonsForScore(t *testing.T) {
 		}
 	}
 
-	reasons := GenerateTriageReasonsForScore(blockerScore, analyzer, unblocksMap)
+	reasons := GenerateTriageReasonsForScore(blockerScore, triageCtx)
 
 	// Should have reasons
 	if len(reasons.All) == 0 {

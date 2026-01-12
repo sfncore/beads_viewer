@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -18,6 +17,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	json "github.com/goccy/go-json"
 
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
@@ -906,8 +907,7 @@ func main() {
 			Recipes: summaries,
 		}
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(output); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding recipes: %v\n", err)
 			os.Exit(1)
@@ -1452,8 +1452,7 @@ func main() {
 				"jq '.results.attention_needed' - Labels needing attention",
 			},
 		}
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(output); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding label health: %v\n", err)
 			os.Exit(1)
@@ -1482,8 +1481,7 @@ func main() {
 				"jq '.flow.flow_matrix' - raw matrix (row=from, col=to, align with .flow.labels)",
 			},
 		}
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(output); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding label flow: %v\n", err)
 			os.Exit(1)
@@ -1567,8 +1565,7 @@ func main() {
 			})
 		}
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(output); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding label attention: %v\n", err)
 			os.Exit(1)
@@ -1606,8 +1603,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(result); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding graph: %v\n", err)
 			os.Exit(1)
@@ -1821,8 +1817,7 @@ func main() {
 			output.Summary.Total++
 		}
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(output); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding alerts: %v\n", err)
 			os.Exit(1)
@@ -1855,8 +1850,7 @@ func main() {
 
 		output := analysis.GenerateRobotSuggestOutput(issues, config, dataHash)
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(output); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding suggestions: %v\n", err)
 			os.Exit(1)
@@ -2196,8 +2190,7 @@ func main() {
 			},
 		}
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(output); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding insights: %v\n", err)
 			os.Exit(1)
@@ -2266,8 +2259,7 @@ func main() {
 			},
 		}
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(output); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding execution plan: %v\n", err)
 			os.Exit(1)
@@ -2401,8 +2393,7 @@ func main() {
 		output.Summary.Recommendations = len(recommendations)
 		output.Summary.HighConfidence = highConfidence
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(output); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding priority recommendations: %v\n", err)
 			os.Exit(1)
@@ -2415,7 +2406,8 @@ func main() {
 		opts := analysis.TriageOptions{
 			GroupByTrack:  *robotTriageByTrack,
 			GroupByLabel:  *robotTriageByLabel,
-			WaitForPhase2: true, // Triage needs full graph metrics
+			WaitForPhase2: true,  // Triage needs full graph metrics
+			UseFastConfig: true,  // Use minimal Phase 2 config for robot mode (bv-t1js)
 		}
 		triage := analysis.ComputeTriageWithOptions(issues, opts)
 
@@ -2520,8 +2512,7 @@ func main() {
 				"jq '.feedback.weight_adjustments' - View feedback-adjusted weights (bv-90)",
 			},
 		}
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(output); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding robot-triage: %v\n", err)
 			os.Exit(1)
@@ -2804,8 +2795,7 @@ func main() {
 		}
 
 		// Output JSON
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(report); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding history report: %v\n", err)
 			os.Exit(1)
@@ -3144,8 +3134,7 @@ func main() {
 			orphanReport.Stats.AvgSuspicion = float64(totalSuspicion) / float64(len(filteredCandidates))
 		}
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(orphanReport); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding orphan report: %v\n", err)
 			os.Exit(1)
@@ -3202,8 +3191,7 @@ func main() {
 		// Create file lookup
 		fileLookup := correlation.NewFileLookup(report)
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 
 		if *fileHotspots {
 			// Output hotspots
@@ -3333,8 +3321,7 @@ func main() {
 			AffectedBeads: impactResult.AffectedBeads,
 		}
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(output); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding impact analysis: %v\n", err)
 			os.Exit(1)
@@ -3411,8 +3398,7 @@ func main() {
 			RelatedFiles: result.RelatedFiles,
 		}
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(output); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding file relations: %v\n", err)
 			os.Exit(1)
@@ -3502,8 +3488,7 @@ func main() {
 			DataHash:          report.DataHash,
 		}
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(output); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding related work: %v\n", err)
 			os.Exit(1)
@@ -3548,8 +3533,7 @@ func main() {
 			Result:      result,
 		}
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(output); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding blocker chain: %v\n", err)
 			os.Exit(1)
@@ -3627,8 +3611,7 @@ func main() {
 		// Generate result
 		result := network.ToResult(beadID, depth)
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(result); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding impact network: %v\n", err)
 			os.Exit(1)
@@ -3701,8 +3684,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(result); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding causality result: %v\n", err)
 			os.Exit(1)
@@ -3818,8 +3800,7 @@ func main() {
 			burndown.ScopeChanges = scopeChanges
 		}
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(burndown); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding burndown: %v\n", err)
 			os.Exit(1)
@@ -3975,8 +3956,7 @@ func main() {
 			output.Filters = filters
 		}
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if outputErr = encoder.Encode(output); outputErr != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding forecast: %v\n", outputErr)
 			os.Exit(1)
@@ -4181,8 +4161,7 @@ func main() {
 		// Suppress unused variable warning
 		_ = medianMinutes
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(output); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding capacity: %v\n", err)
 			os.Exit(1)
@@ -4193,8 +4172,7 @@ func main() {
 	// Handle --robot-metrics flag (bv-84tp)
 	if *robotMetrics {
 		output := metrics.GetAllMetrics()
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(output); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding metrics: %v\n", err)
 			os.Exit(1)
@@ -4947,8 +4925,7 @@ func runProfileStartup(issues []model.Issue, loadDuration time.Duration, jsonOut
 			Recommendations: generateProfileRecommendations(profile, loadDuration, totalWithLoad),
 		}
 
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
+		encoder := newRobotEncoder(os.Stdout)
 		if err := encoder.Encode(output); err != nil {
 			fmt.Fprintf(os.Stderr, "Error encoding profile: %v\n", err)
 			os.Exit(1)
@@ -6471,4 +6448,15 @@ func generateHistoryForExport(issues []model.Issue) (*TimeTravelHistory, error) 
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Commits:     commits,
 	}, nil
+}
+
+// newRobotEncoder creates a JSON encoder for robot mode output.
+// By default, output is compact (no indentation) for performance.
+// Set BV_PRETTY_JSON=1 to enable pretty-printing for human readability.
+func newRobotEncoder(w io.Writer) *json.Encoder {
+	encoder := json.NewEncoder(w)
+	if os.Getenv("BV_PRETTY_JSON") == "1" {
+		encoder.SetIndent("", "  ")
+	}
+	return encoder
 }

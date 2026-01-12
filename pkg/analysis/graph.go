@@ -1555,14 +1555,19 @@ func (a *Analyzer) computePhase2WithProfile(ctx context.Context, stats *GraphSta
 	}
 
 	// Advanced graph signals: k-core, articulation points (undirected), slack (bv-85)
-	kcoreStart := time.Now()
-	localCore, localArticulation = a.computeCoreAndArticulation()
-	profile.KCore = time.Since(kcoreStart)
-	profile.Articulation = 0 // Computed together with k-core
+	// These can be skipped for triage-only mode (bv-t1js optimization)
+	if config.ComputeKCore || config.ComputeArticulation {
+		kcoreStart := time.Now()
+		localCore, localArticulation = a.computeCoreAndArticulation()
+		profile.KCore = time.Since(kcoreStart)
+		profile.Articulation = 0 // Computed together with k-core
+	}
 
-	slackStart := time.Now()
-	localSlack = a.computeSlack(stats.TopologicalOrder)
-	profile.Slack = time.Since(slackStart)
+	if config.ComputeSlack {
+		slackStart := time.Now()
+		localSlack = a.computeSlack(stats.TopologicalOrder)
+		profile.Slack = time.Since(slackStart)
+	}
 
 	// Compute ranks (background optimization)
 	localPageRankRank := computeFloatRanks(localPageRank)

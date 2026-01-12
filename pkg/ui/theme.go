@@ -35,6 +35,19 @@ type Theme struct {
 	Selected lipgloss.Style
 	Column   lipgloss.Style
 	Header   lipgloss.Style
+
+	// Pre-computed delegate styles (bv-o4cj optimization)
+	// These are created once at startup instead of per-frame
+	MutedText         lipgloss.Style // Age, muted info
+	InfoText          lipgloss.Style // Comments
+	InfoBold          lipgloss.Style // Search scores
+	SecondaryText     lipgloss.Style // ID, assignee
+	PrimaryBold       lipgloss.Style // Selection indicator
+	PriorityUpArrow   lipgloss.Style // Priority hint ↑
+	PriorityDownArrow lipgloss.Style // Priority hint ↓
+	TriageStar        lipgloss.Style // Top pick ⭐
+	TriageUnblocks    lipgloss.Style // Unblocks indicator 🔓
+	TriageUnblocksAlt lipgloss.Style // Secondary unblocks ↪
 }
 
 // DefaultTheme returns the standard Dracula-inspired theme (adaptive)
@@ -78,6 +91,19 @@ func DefaultTheme(r *lipgloss.Renderer) Theme {
 		Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#282A36"}).
 		Bold(true).
 		Padding(0, 1)
+
+	// Pre-computed delegate styles (bv-o4cj optimization)
+	// Reduces ~16 NewStyle() allocations per visible item per frame
+	t.MutedText = r.NewStyle().Foreground(ColorMuted)
+	t.InfoText = r.NewStyle().Foreground(ColorInfo)
+	t.InfoBold = r.NewStyle().Foreground(ColorInfo).Bold(true)
+	t.SecondaryText = r.NewStyle().Foreground(t.Secondary)
+	t.PrimaryBold = r.NewStyle().Foreground(t.Primary).Bold(true)
+	t.PriorityUpArrow = r.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true)
+	t.PriorityDownArrow = r.NewStyle().Foreground(lipgloss.Color("#4ECDC4")).Bold(true)
+	t.TriageStar = r.NewStyle().Foreground(lipgloss.Color("#FFD700"))
+	t.TriageUnblocks = r.NewStyle().Foreground(lipgloss.Color("#50FA7B"))
+	t.TriageUnblocksAlt = r.NewStyle().Foreground(lipgloss.Color("#6272A4"))
 
 	return t
 }

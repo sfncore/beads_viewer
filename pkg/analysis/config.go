@@ -39,6 +39,12 @@ type AnalysisConfig struct {
 
 	// Critical path scoring (fast, O(V+E))
 	ComputeCriticalPath bool
+
+	// Advanced graph signals (bv-t1js optimization)
+	// These can be skipped for triage-only mode to reduce latency
+	ComputeKCore       bool // k-core decomposition
+	ComputeArticulation bool // Articulation points
+	ComputeSlack       bool // Scheduling slack
 }
 
 // DefaultConfig returns the default analysis configuration.
@@ -61,6 +67,10 @@ func DefaultConfig() AnalysisConfig {
 
 		ComputeEigenvector:  true,
 		ComputeCriticalPath: true,
+
+		ComputeKCore:       true,
+		ComputeArticulation: true,
+		ComputeSlack:       true,
 	}
 	return ApplyEnvOverrides(cfg)
 }
@@ -100,6 +110,10 @@ func ConfigForSize(nodeCount, edgeCount int) AnalysisConfig {
 
 			ComputeEigenvector:  true,
 			ComputeCriticalPath: true,
+
+			ComputeKCore:       true,
+			ComputeArticulation: true,
+			ComputeSlack:       true,
 		}
 
 	case nodeCount < 500:
@@ -121,6 +135,10 @@ func ConfigForSize(nodeCount, edgeCount int) AnalysisConfig {
 
 			ComputeEigenvector:  true,
 			ComputeCriticalPath: true,
+
+			ComputeKCore:       true,
+			ComputeArticulation: true,
+			ComputeSlack:       true,
 		}
 
 	case nodeCount < 2000:
@@ -138,6 +156,10 @@ func ConfigForSize(nodeCount, edgeCount int) AnalysisConfig {
 
 			ComputeEigenvector:  true,
 			ComputeCriticalPath: true,
+
+			ComputeKCore:       true,
+			ComputeArticulation: true,
+			ComputeSlack:       true,
 		}
 
 		// Use approximate betweenness for large sparse graphs, skip for dense
@@ -170,6 +192,10 @@ func ConfigForSize(nodeCount, edgeCount int) AnalysisConfig {
 
 			ComputeEigenvector:  true,
 			ComputeCriticalPath: true,
+
+			ComputeKCore:       true,
+			ComputeArticulation: true,
+			ComputeSlack:       true,
 		}
 
 		// Only compute HITS for very sparse XL graphs
@@ -204,6 +230,36 @@ func FullAnalysisConfig() AnalysisConfig {
 
 		ComputeEigenvector:  true,
 		ComputeCriticalPath: true,
+
+		ComputeKCore:       true,
+		ComputeArticulation: true,
+		ComputeSlack:       true,
+	}
+	return ApplyEnvOverrides(cfg)
+}
+
+// TriageConfig returns a minimal config optimized for triage operations.
+// Only computes PageRank and Betweenness which are needed for triage scoring.
+// Skips Eigenvector, HITS, Cycles, k-core, articulation, and slack for 50-200ms savings.
+// (bv-t1js optimization)
+func TriageConfig() AnalysisConfig {
+	cfg := AnalysisConfig{
+		ComputeBetweenness: true,
+		BetweennessMode:    BetweennessApproximate,
+		BetweennessSampleSize: 50, // Fast approximation
+		BetweennessTimeout: 200 * time.Millisecond,
+
+		ComputePageRank: true,
+		PageRankTimeout: 200 * time.Millisecond,
+
+		// Disable metrics not needed for triage
+		ComputeHITS:         false,
+		ComputeCycles:       false,
+		ComputeEigenvector:  false,
+		ComputeCriticalPath: false,
+		ComputeKCore:        false,
+		ComputeArticulation: false,
+		ComputeSlack:        false,
 	}
 	return ApplyEnvOverrides(cfg)
 }

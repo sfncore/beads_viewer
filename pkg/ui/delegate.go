@@ -70,16 +70,14 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 
 	// Show Age and Comments only if we have reasonable width
 	if width > 60 {
-		// Age - with subtle styling
-		ageStyle := t.Renderer.NewStyle().Foreground(ColorMuted)
-		rightParts = append(rightParts, ageStyle.Render(fmt.Sprintf("%8s", ageStr)))
+		// Age - with subtle styling (using pre-computed style)
+		rightParts = append(rightParts, t.MutedText.Render(fmt.Sprintf("%8s", ageStr)))
 		rightWidth += 9
 
 		// Comments with icon - use lipgloss.Width for accurate emoji measurement
 		if commentCount > 0 {
-			commentStyle := t.Renderer.NewStyle().Foreground(ColorInfo)
 			commentStr := fmt.Sprintf("💬%d", commentCount)
-			rightParts = append(rightParts, commentStyle.Render(commentStr))
+			rightParts = append(rightParts, t.InfoText.Render(commentStr))
 			rightWidth += lipgloss.Width(commentStr) + 1 // +1 for spacing
 		} else {
 			rightParts = append(rightParts, "   ")
@@ -99,8 +97,7 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 	// Assignee (if present and we have room)
 	if width > 100 && i.Issue.Assignee != "" {
 		assignee := truncateRunesHelper(i.Issue.Assignee, 12, "…")
-		assigneeStyle := t.Renderer.NewStyle().Foreground(ColorSecondary)
-		rightParts = append(rightParts, assigneeStyle.Render(fmt.Sprintf("@%-12s", assignee)))
+		rightParts = append(rightParts, t.SecondaryText.Render(fmt.Sprintf("@%-12s", assignee)))
 		rightWidth += 14
 	}
 
@@ -156,8 +153,7 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 	var searchBadge string
 	if d.ShowSearchScores && i.SearchScoreSet {
 		scoreStr := fmt.Sprintf("%.2f", i.SearchScore)
-		scoreStyle := t.Renderer.NewStyle().Foreground(ColorInfo).Bold(true)
-		searchBadge = scoreStyle.Render(fmt.Sprintf("[%s]", scoreStr))
+		searchBadge = t.InfoBold.Render(fmt.Sprintf("[%s]", scoreStr))
 		leftFixedWidth += lipgloss.Width(searchBadge) + 1
 	}
 
@@ -194,9 +190,9 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 	// ══════════════════════════════════════════════════════════════════════════
 	var leftSide strings.Builder
 
-	// Selection indicator with accent color
+	// Selection indicator with accent color (using pre-computed style)
 	if isSelected {
-		leftSide.WriteString(t.Renderer.NewStyle().Foreground(t.Primary).Bold(true).Render("▸ "))
+		leftSide.WriteString(t.PrimaryBold.Render("▸ "))
 	} else {
 		leftSide.WriteString("  ")
 	}
@@ -215,13 +211,13 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 	leftSide.WriteString(prioBadge)
 	leftSide.WriteString(" ")
 
-	// Priority hint indicator (↑/↓)
+	// Priority hint indicator (↑/↓) - using pre-computed styles
 	if d.ShowPriorityHints && d.PriorityHints != nil {
 		if hint, ok := d.PriorityHints[i.Issue.ID]; ok {
 			if hint.Direction == "increase" {
-				leftSide.WriteString(t.Renderer.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true).Render("↑"))
+				leftSide.WriteString(t.PriorityUpArrow.Render("↑"))
 			} else if hint.Direction == "decrease" {
-				leftSide.WriteString(t.Renderer.NewStyle().Foreground(lipgloss.Color("#4ECDC4")).Bold(true).Render("↓"))
+				leftSide.WriteString(t.PriorityDownArrow.Render("↓"))
 			}
 		} else {
 			leftSide.WriteString(" ")
@@ -229,14 +225,14 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 		leftSide.WriteString(" ")
 	}
 
-	// Triage indicators (bv-151): Quick win ⭐ and Unblocks count 🔓
+	// Triage indicators (bv-151): Quick win ⭐ and Unblocks count 🔓 - using pre-computed styles
 	triageIndicator := ""
 	if i.IsQuickWin {
-		triageIndicator = t.Renderer.NewStyle().Foreground(lipgloss.Color("#FFD700")).Render("⭐")
+		triageIndicator = t.TriageStar.Render("⭐")
 	} else if i.IsBlocker && i.UnblocksCount > 0 {
-		triageIndicator = t.Renderer.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(fmt.Sprintf("🔓%d", i.UnblocksCount))
+		triageIndicator = t.TriageUnblocks.Render(fmt.Sprintf("🔓%d", i.UnblocksCount))
 	} else if i.UnblocksCount > 0 {
-		triageIndicator = t.Renderer.NewStyle().Foreground(lipgloss.Color("#6272A4")).Render(fmt.Sprintf("↪%d", i.UnblocksCount))
+		triageIndicator = t.TriageUnblocksAlt.Render(fmt.Sprintf("↪%d", i.UnblocksCount))
 	}
 	if triageIndicator != "" {
 		leftSide.WriteString(triageIndicator)
@@ -253,8 +249,8 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 		leftSide.WriteString(" ")
 	}
 
-	// ID with secondary styling
-	idStyle := t.Renderer.NewStyle().Foreground(t.Secondary)
+	// ID with secondary styling (using pre-computed style base)
+	idStyle := t.SecondaryText
 	if isSelected {
 		idStyle = idStyle.Bold(true)
 	}
