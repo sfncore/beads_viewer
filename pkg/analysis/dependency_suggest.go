@@ -151,8 +151,8 @@ func DetectMissingDependencies(issues []model.Issue, config DependencySuggestion
 			issue1 := &issues[i]
 			issue2 := &issues[j]
 
-			// Skip if both closed
-			if issue1.Status == model.StatusClosed && issue2.Status == model.StatusClosed {
+			// Skip closed-like issues (no dependency suggestions for completed/tombstoned work)
+			if isClosedLikeStatus(issue1.Status) || isClosedLikeStatus(issue2.Status) {
 				continue
 			}
 

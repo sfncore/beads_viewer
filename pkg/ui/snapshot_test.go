@@ -1,8 +1,10 @@
 package ui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -180,6 +182,164 @@ func TestSnapshotBuilder_WithDependencies(t *testing.T) {
 	}
 }
 
+func TestSnapshotBuilder_TombstoneCounts(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "open-1", Title: "Open", Status: model.StatusOpen},
+		{ID: "closed-1", Title: "Closed", Status: model.StatusClosed},
+		{ID: "tomb-1", Title: "Removed", Status: model.StatusTombstone},
+		{
+			ID:     "open-2",
+			Title:  "Depends on tombstone",
+			Status: model.StatusOpen,
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "tomb-1", Type: model.DepBlocks},
+			},
+		},
+		{
+			ID:     "open-3",
+			Title:  "Depends on open",
+			Status: model.StatusOpen,
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "open-1", Type: model.DepBlocks},
+			},
+		},
+	}
+
+	snapshot := NewSnapshotBuilder(issues).Build()
+	if snapshot == nil {
+		t.Fatal("Build returned nil snapshot")
+	}
+
+	if snapshot.CountOpen != 3 {
+		t.Errorf("Expected 3 open issues (tombstone excluded), got %d", snapshot.CountOpen)
+	}
+	if snapshot.CountClosed != 2 {
+		t.Errorf("Expected 2 closed issues (closed+tombstone), got %d", snapshot.CountClosed)
+	}
+	if snapshot.CountReady != 2 {
+		t.Errorf("Expected 2 ready issues (open-1, open-2), got %d", snapshot.CountReady)
+	}
+}
+
+func TestDatasetTierForIssueCount_Boundaries(t *testing.T) {
+	tests := []struct {
+		count int
+		want  datasetTier
+	}{
+		{0, datasetTierUnknown},
+		{1, datasetTierSmall},
+		{999, datasetTierSmall},
+		{1000, datasetTierMedium},
+		{4999, datasetTierMedium},
+		{5000, datasetTierLarge},
+		{19999, datasetTierLarge},
+		{20000, datasetTierHuge},
+	}
+
+	for _, tc := range tests {
+		if got := datasetTierForIssueCount(tc.count); got != tc.want {
+			t.Errorf("datasetTierForIssueCount(%d)=%v, want %v", tc.count, got, tc.want)
+		}
+	}
+}
+
+func TestSnapshotBuilder_WithBuildConfig_SkipsPrecomputesForLargeTier(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "test-1", Title: "Issue 1", Status: model.StatusOpen, Priority: 1},
+		{ID: "test-2", Title: "Issue 2", Status: model.StatusClosed, Priority: 2},
+	}
+
+	snapshot := NewSnapshotBuilder(issues).
+		WithBuildConfig(snapshotBuildConfigForTier(datasetTierLarge)).
+		Build()
+	if snapshot == nil {
+		t.Fatal("Build returned nil snapshot")
+	}
+	if snapshot.Analysis == nil || snapshot.Analyzer == nil {
+		t.Fatal("expected analysis/analyzer to be populated")
+	}
+	if len(snapshot.ListItems) != 2 {
+		t.Fatalf("expected 2 list items, got %d", len(snapshot.ListItems))
+	}
+	if snapshot.TriageScores != nil || snapshot.TriageReasons != nil || snapshot.UnblocksMap != nil {
+		t.Fatalf("expected triage precompute to be skipped")
+	}
+	if snapshot.TreeRoots != nil || snapshot.TreeNodeMap != nil {
+		t.Fatalf("expected tree precompute to be skipped")
+	}
+	if snapshot.BoardState != nil {
+		t.Fatalf("expected board precompute to be skipped")
+	}
+	if snapshot.GraphLayout != nil {
+		t.Fatalf("expected graph layout precompute to be skipped")
+	}
+	if snapshot.Insights.Stats != snapshot.Analysis {
+		t.Fatalf("expected Insights.Stats to reference Analysis")
+	}
+}
+
+func TestSnapshotBuilder_WithAnalysis_PopulatesGraphScores(t *testing.T) {
+	now := time.Now()
+	issues := []model.Issue{
+		{ID: "A", Title: "A", Status: model.StatusOpen, CreatedAt: now},
+		{
+			ID:     "B",
+			Title:  "B",
+			Status: model.StatusOpen,
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "A", Type: model.DepBlocks},
+			},
+			CreatedAt: now.Add(-time.Hour),
+		},
+		{
+			ID:     "C",
+			Title:  "C",
+			Status: model.StatusOpen,
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "B", Type: model.DepBlocks},
+			},
+			CreatedAt: now.Add(-2 * time.Hour),
+		},
+	}
+
+	analyzer := analysis.NewAnalyzer(copyIssues(issues))
+	cfg := analysis.ConfigForSize(len(issues), 2)
+	cfg.ComputePageRank = true
+	cfg.ComputeCriticalPath = true
+	cfg.ComputeBetweenness = false
+	cfg.ComputeEigenvector = false
+	cfg.ComputeHITS = false
+	cfg.ComputeCycles = false
+	statsValue := analyzer.AnalyzeWithConfig(cfg)
+
+	snapshot := NewSnapshotBuilder(copyIssues(issues)).
+		WithAnalysis(&statsValue).
+		Build()
+	if snapshot == nil {
+		t.Fatal("Build returned nil snapshot")
+	}
+	if snapshot.Analysis == nil {
+		t.Fatal("expected Analysis to be populated")
+	}
+
+	seenNonZero := false
+	for _, item := range snapshot.ListItems {
+		want := snapshot.Analysis.GetPageRankScore(item.Issue.ID)
+		if want > 0 {
+			seenNonZero = true
+		}
+		if item.GraphScore != want {
+			t.Fatalf("GraphScore for %s=%v, want %v", item.Issue.ID, item.GraphScore, want)
+		}
+		if item.Impact != snapshot.Analysis.GetCriticalPathScore(item.Issue.ID) {
+			t.Fatalf("Impact for %s=%v, want %v", item.Issue.ID, item.Impact, snapshot.Analysis.GetCriticalPathScore(item.Issue.ID))
+		}
+	}
+	if !seenNonZero {
+		t.Fatal("expected non-zero PageRank scores when Analysis is precomputed")
+	}
+}
+
 func TestSnapshotBuilder_GraphLayout(t *testing.T) {
 	issues := []model.Issue{
 		{
@@ -328,6 +488,111 @@ func TestSnapshotBuilder_WithRecipe_FiltersListItems(t *testing.T) {
 	}
 	if got := snapshot.ListItems[0].Issue.ID; got != "open-1" {
 		t.Fatalf("Expected open-1, got %s", got)
+	}
+}
+
+func TestSnapshotBuilder_IncrementalListClearsEphemeralFields(t *testing.T) {
+	now := time.Now()
+	issues := []model.Issue{
+		{ID: "A", Title: "A", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask, CreatedAt: now},
+		{ID: "B", Title: "B", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask, CreatedAt: now.Add(-time.Hour)},
+	}
+
+	prev := NewSnapshotBuilder(copyIssues(issues)).Build()
+	if len(prev.ListItems) == 0 {
+		t.Fatal("expected previous list items")
+	}
+
+	prev.ListItems[0].SearchScoreSet = true
+	prev.ListItems[0].SearchScore = 0.9
+	prev.ListItems[0].SearchComponents = map[string]float64{"signal": 1}
+	prev.ListItems[0].DiffStatus = DiffStatusModified
+	prev.ListItems[0].TriageScore = 0.5
+	prev.ListItems[0].TriageReason = "reason"
+	prev.ListItems[0].TriageReasons = []string{"reason"}
+	prev.ListItems[0].IsQuickWin = true
+	prev.ListItems[0].IsBlocker = true
+	prev.ListItems[0].UnblocksCount = 2
+
+	diffValue := analysis.ComputeIssueDiff(prev.Issues, issues)
+	cfg := snapshotBuildConfigDefault()
+	cfg.PrecomputeTriage = false
+
+	next := NewSnapshotBuilder(copyIssues(issues)).
+		WithBuildConfig(cfg).
+		WithPreviousSnapshot(prev, &diffValue).
+		Build()
+
+	if !next.IncrementalListUsed {
+		t.Fatal("expected incremental list path")
+	}
+
+	for _, item := range next.ListItems {
+		if item.SearchScoreSet || item.SearchComponents != nil {
+			t.Fatalf("expected search fields cleared, got %#v", item)
+		}
+		if item.DiffStatus != DiffStatusNone {
+			t.Fatalf("expected DiffStatusNone, got %v", item.DiffStatus)
+		}
+		if item.TriageScore != 0 || item.TriageReason != "" || len(item.TriageReasons) != 0 {
+			t.Fatalf("expected triage fields cleared, got %#v", item)
+		}
+		if item.IsQuickWin || item.IsBlocker || item.UnblocksCount != 0 {
+			t.Fatalf("expected triage flags cleared, got %#v", item)
+		}
+	}
+}
+
+func TestSnapshotBuilder_IncrementalListMatchesFull(t *testing.T) {
+	now := time.Now()
+	issues := make([]model.Issue, 0, 10)
+	for i := 0; i < 10; i++ {
+		issues = append(issues, model.Issue{
+			ID:        fmt.Sprintf("T-%02d", i),
+			Title:     fmt.Sprintf("Issue %d", i),
+			Status:    model.StatusOpen,
+			Priority:  i,
+			IssueType: model.TypeTask,
+			CreatedAt: now.Add(-time.Duration(i) * time.Hour),
+		})
+	}
+
+	prev := NewSnapshotBuilder(copyIssues(issues)).Build()
+	updated := copyIssues(issues)
+	updated[0].Title = "Issue 0 updated"
+
+	diffValue := analysis.ComputeIssueDiff(prev.Issues, updated)
+	cfg := snapshotBuildConfigDefault()
+	cfg.PrecomputeTriage = false
+
+	incremental := NewSnapshotBuilder(copyIssues(updated)).
+		WithBuildConfig(cfg).
+		WithPreviousSnapshot(prev, &diffValue).
+		Build()
+	full := NewSnapshotBuilder(copyIssues(updated)).
+		WithBuildConfig(cfg).
+		Build()
+
+	if incremental.IssueDiff == nil {
+		t.Fatal("expected IssueDiff to be set")
+	}
+	if got := incremental.IssueDiffStats.Total; got != len(updated) {
+		t.Fatalf("IssueDiffStats.Total=%d, want %d", got, len(updated))
+	}
+	if got := incremental.IssueDiffStats.Changed; got != 1 {
+		t.Fatalf("IssueDiffStats.Changed=%d, want 1", got)
+	}
+
+	if !reflect.DeepEqual(incremental.ListItems, full.ListItems) {
+		if len(incremental.ListItems) != len(full.ListItems) {
+			t.Fatalf("incremental list items differ from full rebuild: len=%d want %d", len(incremental.ListItems), len(full.ListItems))
+		}
+		for i := range incremental.ListItems {
+			if !reflect.DeepEqual(incremental.ListItems[i], full.ListItems[i]) {
+				t.Fatalf("incremental list items differ from full rebuild at index %d: incremental=%#v full=%#v", i, incremental.ListItems[i], full.ListItems[i])
+			}
+		}
+		t.Fatalf("incremental list items differ from full rebuild")
 	}
 }
 

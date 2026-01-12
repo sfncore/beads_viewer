@@ -217,6 +217,8 @@ func computeStatusRisk(issue *model.Issue, now time.Time) float64 {
 	var risk float64
 
 	switch issue.Status {
+	case model.StatusClosed, model.StatusTombstone:
+		risk = 0
 	case model.StatusBlocked:
 		// Blocked items have inherent risk
 		risk = 0.7
@@ -342,7 +344,7 @@ func ComputeAllRiskSignals(
 	weights := DefaultRiskWeights()
 
 	for id, issue := range issues {
-		if issue.Status == model.StatusClosed {
+		if isClosedLikeStatus(issue.Status) {
 			continue // Skip closed issues
 		}
 		result[id] = ComputeRiskSignalsWithWeights(&issue, stats, issues, now, weights)

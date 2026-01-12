@@ -68,8 +68,59 @@ func TestComputeTriage_BasicIssues(t *testing.T) {
 	}
 
 	// Commands should be populated
-	if triage.Commands.ListReady != "bd ready" {
-		t.Errorf("expected 'bd ready' command, got %s", triage.Commands.ListReady)
+	if triage.Commands.ListReady != "CI=1 bd ready --json" {
+		t.Errorf("expected 'CI=1 bd ready --json' command, got %s", triage.Commands.ListReady)
+	}
+}
+
+func TestComputeTriage_IgnoresTombstoneIssues(t *testing.T) {
+	issues := []model.Issue{
+		{
+			ID:        "ghost",
+			Title:     "Deleted issue",
+			Status:    model.StatusTombstone,
+			Priority:  0,
+			IssueType: model.TypeTask,
+		},
+		{
+			ID:        "live",
+			Title:     "Depends on ghost",
+			Status:    model.StatusOpen,
+			Priority:  1,
+			IssueType: model.TypeTask,
+			UpdatedAt: time.Now().Add(-24 * time.Hour),
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "ghost", Type: model.DepBlocks},
+			},
+		},
+	}
+
+	triage := ComputeTriage(issues)
+
+	if triage.QuickRef.OpenCount != 1 {
+		t.Errorf("expected 1 open (tombstones excluded), got %d", triage.QuickRef.OpenCount)
+	}
+	if triage.QuickRef.ActionableCount != 1 {
+		t.Errorf("expected 1 actionable (tombstone blockers ignored), got %d", triage.QuickRef.ActionableCount)
+	}
+	if triage.QuickRef.BlockedCount != 0 {
+		t.Errorf("expected 0 blocked (tombstone blockers ignored), got %d", triage.QuickRef.BlockedCount)
+	}
+
+	for _, rec := range triage.Recommendations {
+		if rec.ID == "ghost" {
+			t.Fatalf("tombstone issue should never be recommended")
+		}
+	}
+	for _, pick := range triage.QuickRef.TopPicks {
+		if pick.ID == "ghost" {
+			t.Fatalf("tombstone issue should never appear in top_picks")
+		}
+	}
+	for _, b := range triage.BlockersToClear {
+		if b.ID == "ghost" {
+			t.Fatalf("tombstone issue should never appear in blockers_to_clear")
+		}
 	}
 }
 
@@ -274,6 +325,28 @@ func TestProjectVelocityComputed(t *testing.T) {
 	}
 }
 
+func TestComputeProjectVelocity_BoundaryInclusivity(t *testing.T) {
+	now := time.Date(2025, 12, 16, 0, 0, 0, 0, time.UTC)
+	weekAgo := now.Add(-7 * 24 * time.Hour)
+	monthAgo := now.Add(-30 * 24 * time.Hour)
+
+	issues := []model.Issue{
+		{ID: "week-boundary", Status: model.StatusClosed, CreatedAt: weekAgo.Add(-24 * time.Hour), ClosedAt: &weekAgo},
+		{ID: "month-boundary", Status: model.StatusClosed, CreatedAt: monthAgo.Add(-24 * time.Hour), ClosedAt: &monthAgo},
+	}
+
+	v := ComputeProjectVelocity(issues, now, 4)
+	if v == nil {
+		t.Fatal("expected velocity, got nil")
+	}
+	if v.ClosedLast7Days != 1 {
+		t.Fatalf("ClosedLast7Days: expected 1, got %d", v.ClosedLast7Days)
+	}
+	if v.ClosedLast30Days != 2 {
+		t.Fatalf("ClosedLast30Days: expected 2, got %d", v.ClosedLast30Days)
+	}
+}
+
 func TestTriageEmptyCommands(t *testing.T) {
 	// When there are no open issues, commands should be gracefully handled
 	issues := []model.Issue{
@@ -282,13 +355,8 @@ func TestTriageEmptyCommands(t *testing.T) {
 
 	triage := ComputeTriage(issues)
 
-	// Should not have "bd update  --status" (empty ID)
-	if triage.Commands.ClaimTop == "bd update  --status=in_progress" {
-		t.Error("ClaimTop should not have empty ID")
-	}
-	// Should have a fallback message
-	if triage.Commands.ClaimTop == "" {
-		t.Error("ClaimTop should not be empty")
+	if triage.Commands.ClaimTop != "CI=1 bd ready --json  # No top pick available" {
+		t.Errorf("unexpected ClaimTop fallback: %q", triage.Commands.ClaimTop)
 	}
 }
 
@@ -297,12 +365,11 @@ func TestTriageNoRecommendationsCommands(t *testing.T) {
 	triage := ComputeTriage(nil)
 
 	// Commands should be valid even with no recommendations
-	if triage.Commands.ListReady != "bd ready" {
-		t.Errorf("expected 'bd ready', got %s", triage.Commands.ListReady)
+	if triage.Commands.ListReady != "CI=1 bd ready --json" {
+		t.Errorf("expected 'CI=1 bd ready --json', got %s", triage.Commands.ListReady)
 	}
-	// ClaimTop should have fallback, not empty ID
-	if triage.Commands.ClaimTop == "bd update  --status=in_progress" {
-		t.Error("ClaimTop should not have empty ID in command")
+	if triage.Commands.ClaimTop != "CI=1 bd ready --json  # No top pick available" {
+		t.Errorf("unexpected ClaimTop fallback: %q", triage.Commands.ClaimTop)
 	}
 }
 

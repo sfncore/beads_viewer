@@ -75,17 +75,19 @@ func GenerateMermaidGraph(issues []model.Issue, issueIDs map[string]bool, config
 
 		// Apply class based on status
 		var class string
-		switch i.Status {
-		case model.StatusOpen:
-			class = "open"
-		case model.StatusInProgress:
-			class = "inprogress"
-		case model.StatusBlocked:
-			class = "blocked"
-		case model.StatusClosed:
+		switch {
+		case isClosedLikeStatus(i.Status):
 			class = "closed"
+		case i.Status == model.StatusOpen:
+			class = "open"
+		case i.Status == model.StatusInProgress:
+			class = "inprogress"
+		case i.Status == model.StatusBlocked:
+			class = "blocked"
 		}
-		sb.WriteString(fmt.Sprintf("    class %s %s\n", safeID, class))
+		if class != "" {
+			sb.WriteString(fmt.Sprintf("    class %s %s\n", safeID, class))
+		}
 	}
 
 	sb.WriteString("\n")

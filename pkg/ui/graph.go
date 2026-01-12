@@ -875,30 +875,30 @@ func (g *GraphModel) renderMetricsPanel(id string, width int, t Theme) string {
 // Helper functions
 
 func getStatusIcon(status model.Status) string {
-	switch status {
-	case model.StatusOpen:
-		return "🔵"
-	case model.StatusInProgress:
-		return "🟡"
-	case model.StatusBlocked:
-		return "🔴"
-	case model.StatusClosed:
+	switch {
+	case isClosedLikeStatus(status):
 		return "✅"
+	case status == model.StatusOpen:
+		return "🔵"
+	case status == model.StatusInProgress:
+		return "🟡"
+	case status == model.StatusBlocked:
+		return "🔴"
 	default:
 		return "⚪"
 	}
 }
 
 func getStatusColor(status model.Status, t Theme) lipgloss.AdaptiveColor {
-	switch status {
-	case model.StatusOpen:
-		return t.Open
-	case model.StatusInProgress:
-		return t.InProgress
-	case model.StatusBlocked:
-		return t.Blocked
-	case model.StatusClosed:
+	switch {
+	case isClosedLikeStatus(status):
 		return t.Closed
+	case status == model.StatusOpen:
+		return t.Open
+	case status == model.StatusInProgress:
+		return t.InProgress
+	case status == model.StatusBlocked:
+		return t.Blocked
 	default:
 		return t.Secondary
 	}

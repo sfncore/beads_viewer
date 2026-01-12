@@ -107,6 +107,7 @@ func TestSuggestLabels_EmptyIssues(t *testing.T) {
 func TestSuggestLabels_SkipsClosedIssues(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "CLOSED-1", Title: "Fix critical bug", Status: model.StatusClosed},
+		{ID: "TOMBSTONE-1", Title: "Removed issue", Status: model.StatusTombstone},
 		{ID: "OPEN-1", Title: "Fix another bug", Status: model.StatusOpen, Labels: []string{"bug"}},
 	}
 
@@ -116,8 +117,8 @@ func TestSuggestLabels_SkipsClosedIssues(t *testing.T) {
 
 	// Closed issue should not appear in suggestions
 	for _, sug := range suggestions {
-		if sug.TargetBead == "CLOSED-1" {
-			t.Errorf("suggestion should not be for closed issue: %+v", sug)
+		if sug.TargetBead == "CLOSED-1" || sug.TargetBead == "TOMBSTONE-1" {
+			t.Errorf("suggestion should not be for closed/tombstone issue: %+v", sug)
 		}
 	}
 }
@@ -314,6 +315,41 @@ func TestSuggestLabels_MaxSuggestionsPerIssue(t *testing.T) {
 
 	if count > 2 {
 		t.Errorf("MaxSuggestionsPerIssue=2 but got %d suggestions for MULTI-1", count)
+	}
+}
+
+func TestSuggestLabels_PrefersHighestScore(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "MULTI-1", Title: "Bug login auth issue", Status: model.StatusOpen},
+		{ID: "L1", Title: "x", Status: model.StatusOpen, Labels: []string{"bug"}},
+		{ID: "L2", Title: "x", Status: model.StatusOpen, Labels: []string{"auth"}},
+		{ID: "L3", Title: "x", Status: model.StatusOpen, Labels: []string{"security"}},
+	}
+
+	config := DefaultLabelSuggestionConfig()
+	config.MinConfidence = 0.1
+	config.MaxSuggestionsPerIssue = 1
+	config.LearnFromExisting = false
+
+	suggestions := SuggestLabels(issues, config)
+
+	var labels []string
+	for _, sug := range suggestions {
+		if sug.TargetBead != "MULTI-1" {
+			continue
+		}
+		meta, ok := sug.Metadata["suggested_label"]
+		if !ok {
+			t.Fatalf("missing suggested_label metadata")
+		}
+		labels = append(labels, meta.(string))
+	}
+
+	if len(labels) != 1 {
+		t.Fatalf("expected 1 suggestion for MULTI-1, got %d (%v)", len(labels), labels)
+	}
+	if labels[0] != "auth" {
+		t.Fatalf("expected highest-score label 'auth', got %q", labels[0])
 	}
 }
 

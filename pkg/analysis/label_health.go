@@ -238,7 +238,7 @@ func ComputeCrossLabelFlow(issues []model.Issue, cfg LabelHealthConfig) CrossLab
 	totalDeps := 0
 
 	for _, blocked := range issues {
-		if !cfg.IncludeClosedInFlow && blocked.Status == model.StatusClosed {
+		if !cfg.IncludeClosedInFlow && isClosedLikeStatus(blocked.Status) {
 			continue
 		}
 		for _, dep := range blocked.Dependencies {
@@ -249,7 +249,7 @@ func ComputeCrossLabelFlow(issues []model.Issue, cfg LabelHealthConfig) CrossLab
 			if !ok {
 				continue
 			}
-			if !cfg.IncludeClosedInFlow && blocker.Status == model.StatusClosed {
+			if !cfg.IncludeClosedInFlow && isClosedLikeStatus(blocker.Status) {
 				continue
 			}
 			// Cross-product of labels
@@ -349,6 +349,9 @@ func ComputeVelocityMetrics(issues []model.Issue, now time.Time) VelocityMetrics
 	var prevWeek, currentWeek int
 
 	for _, iss := range issues {
+		if !isClosedLikeStatus(iss.Status) {
+			continue
+		}
 		if iss.ClosedAt == nil {
 			continue
 		}
@@ -426,7 +429,7 @@ func ComputeFreshnessMetrics(issues []model.Issue, now time.Time, staleDays int)
 		if iss.UpdatedAt.After(mostRecent) {
 			mostRecent = iss.UpdatedAt
 		}
-		if iss.Status != model.StatusClosed {
+		if !isClosedLikeStatus(iss.Status) {
 			if oldestOpen.IsZero() || iss.CreatedAt.Before(oldestOpen) {
 				oldestOpen = iss.CreatedAt
 			}
@@ -486,7 +489,7 @@ func ComputeLabelHealthForLabel(label string, issues []model.Issue, cfg LabelHea
 	// Status counts
 	for _, iss := range labeled {
 		switch iss.Status {
-		case model.StatusClosed:
+		case model.StatusClosed, model.StatusTombstone:
 			health.ClosedCount++
 		case model.StatusInProgress:
 			health.OpenCount++
@@ -853,7 +856,7 @@ func ExtractLabels(issues []model.Issue) LabelExtractionResult {
 			switch issue.Status {
 			case model.StatusOpen:
 				stats.OpenCount++
-			case model.StatusClosed:
+			case model.StatusClosed, model.StatusTombstone:
 				stats.ClosedCount++
 			case model.StatusInProgress:
 				stats.InProgress++
@@ -1000,7 +1003,7 @@ func ComputeBlockedByLabel(issues []model.Issue, analyzer *Analyzer) map[string]
 	blocked := make(map[string]int)
 
 	for _, issue := range issues {
-		if issue.Status == model.StatusClosed {
+		if isClosedLikeStatus(issue.Status) {
 			continue
 		}
 
@@ -1208,7 +1211,7 @@ func computeSingleCascade(sourceLabel string, blockedIssues []model.Issue, flow 
 				continue
 			}
 			blocker, exists := issueMap[dep.DependsOnID]
-			if !exists || blocker.Status == model.StatusClosed {
+			if !exists || isClosedLikeStatus(blocker.Status) {
 				continue
 			}
 			// Count how many issues this blocker transitively affects
@@ -1996,7 +1999,7 @@ func computeLabelAttention(label string, issues []model.Issue, issueMap map[stri
 
 	// Count open and blocked issues
 	for _, iss := range labeledIssues {
-		if iss.Status != model.StatusClosed {
+		if !isClosedLikeStatus(iss.Status) {
 			score.OpenCount++
 		}
 	}
@@ -2117,6 +2120,9 @@ func ComputeHistoricalVelocity(issues []model.Issue, label string, numWeeks int,
 	// Bucket closed issues by week
 	cumulative := 0
 	for _, iss := range labeled {
+		if !isClosedLikeStatus(iss.Status) {
+			continue
+		}
 		if iss.ClosedAt == nil {
 			continue
 		}

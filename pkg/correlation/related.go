@@ -3,6 +3,7 @@ package correlation
 
 import (
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -173,8 +174,8 @@ func (hr *HistoryReport) findFileOverlap(targetID string, targetFiles map[string
 			continue
 		}
 
-		// Skip closed beads if not requested (double-check)
-		if !opts.IncludeClosed && history.Status == "closed" {
+		// Skip closed/tombstone beads if not requested
+		if shouldSkipRelatedStatus(history.Status, opts.IncludeClosed) {
 			continue
 		}
 
@@ -188,6 +189,8 @@ func (hr *HistoryReport) findFileOverlap(targetID string, targetFiles map[string
 			continue
 		}
 
+		sortedShared := append([]string(nil), sharedFiles...)
+		sort.Strings(sortedShared)
 		results = append(results, RelatedWorkBead{
 			BeadID:       beadID,
 			Title:        history.Title,
@@ -195,14 +198,12 @@ func (hr *HistoryReport) findFileOverlap(targetID string, targetFiles map[string
 			RelationType: RelationFileOverlap,
 			Relevance:    relevance,
 			Reason:       formatFileOverlapReason(len(sharedFiles), totalTargetFiles),
-			SharedFiles:  limitStrings(sharedFiles, 5),
+			SharedFiles:  limitStrings(sortedShared, 5),
 		})
 	}
 
 	// Sort by relevance descending
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Relevance > results[j].Relevance
-	})
+	sortRelatedResults(results)
 
 	// Limit results
 	if opts.MaxResults > 0 && len(results) > opts.MaxResults {
@@ -244,8 +245,8 @@ func (hr *HistoryReport) findCommitOverlap(targetID string, targetCommits map[st
 			continue
 		}
 
-		// Skip closed beads if not requested
-		if !opts.IncludeClosed && history.Status == "closed" {
+		// Skip closed/tombstone beads if not requested
+		if shouldSkipRelatedStatus(history.Status, opts.IncludeClosed) {
 			continue
 		}
 
@@ -259,6 +260,8 @@ func (hr *HistoryReport) findCommitOverlap(targetID string, targetCommits map[st
 			continue
 		}
 
+		sortedSHAs := append([]string(nil), sharedSHAs...)
+		sort.Strings(sortedSHAs)
 		results = append(results, RelatedWorkBead{
 			BeadID:        beadID,
 			Title:         history.Title,
@@ -266,14 +269,12 @@ func (hr *HistoryReport) findCommitOverlap(targetID string, targetCommits map[st
 			RelationType:  RelationCommitOverlap,
 			Relevance:     relevance,
 			Reason:        formatCommitOverlapReason(len(sharedSHAs), totalTargetCommits),
-			SharedCommits: limitStrings(shortenSHAs(sharedSHAs), 5),
+			SharedCommits: limitStrings(shortenSHAs(sortedSHAs), 5),
 		})
 	}
 
 	// Sort by relevance descending
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Relevance > results[j].Relevance
-	})
+	sortRelatedResults(results)
 
 	// Limit results
 	if opts.MaxResults > 0 && len(results) > opts.MaxResults {
@@ -342,8 +343,8 @@ func (hr *HistoryReport) findDependencyCluster(targetID string, opts RelatedWork
 			continue
 		}
 
-		// Skip closed beads if not requested
-		if !opts.IncludeClosed && history.Status == "closed" {
+		// Skip closed/tombstone beads if not requested
+		if shouldSkipRelatedStatus(history.Status, opts.IncludeClosed) {
 			continue
 		}
 
@@ -369,10 +370,7 @@ func (hr *HistoryReport) findDependencyCluster(targetID string, opts RelatedWork
 		})
 	}
 
-	// Sort by relevance descending
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Relevance > results[j].Relevance
-	})
+	sortRelatedResults(results)
 
 	// Limit results
 	if opts.MaxResults > 0 && len(results) > opts.MaxResults {
@@ -417,8 +415,8 @@ func (hr *HistoryReport) findConcurrent(targetID string, target BeadHistory, opt
 			continue
 		}
 
-		// Skip closed beads if not requested
-		if !opts.IncludeClosed && history.Status == "closed" {
+		// Skip closed/tombstone beads if not requested
+		if shouldSkipRelatedStatus(history.Status, opts.IncludeClosed) {
 			continue
 		}
 
@@ -483,10 +481,7 @@ func (hr *HistoryReport) findConcurrent(targetID string, target BeadHistory, opt
 		}
 	}
 
-	// Sort by relevance descending
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Relevance > results[j].Relevance
-	})
+	sortRelatedResults(results)
 
 	// Limit results
 	if opts.MaxResults > 0 && len(results) > opts.MaxResults {
@@ -497,6 +492,30 @@ func (hr *HistoryReport) findConcurrent(targetID string, target BeadHistory, opt
 }
 
 // Helper functions
+
+func shouldSkipRelatedStatus(status string, includeClosed bool) bool {
+	normalized := normalizeStatus(status)
+	if normalized == "tombstone" {
+		return true
+	}
+	if !includeClosed && normalized == "closed" {
+		return true
+	}
+	return false
+}
+
+func sortRelatedResults(results []RelatedWorkBead) {
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Relevance == results[j].Relevance {
+			return results[i].BeadID < results[j].BeadID
+		}
+		return results[i].Relevance > results[j].Relevance
+	})
+}
+
+func normalizeStatus(status string) string {
+	return strings.ToLower(strings.TrimSpace(status))
+}
 
 func formatFileOverlapReason(shared, total int) string {
 	pct := (shared * 100) / total

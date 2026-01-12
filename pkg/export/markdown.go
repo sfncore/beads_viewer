@@ -83,15 +83,17 @@ func GenerateMarkdown(issues []model.Issue, title string) (string, error) {
 
 	open, inProgress, blocked, closed := 0, 0, 0, 0
 	for _, i := range issues {
+		if isClosedLikeStatus(i.Status) {
+			closed++
+			continue
+		}
 		switch i.Status {
-		case model.StatusOpen:
-			open++
 		case model.StatusInProgress:
 			inProgress++
 		case model.StatusBlocked:
 			blocked++
-		case model.StatusClosed:
-			closed++
+		default:
+			open++
 		}
 	}
 
@@ -105,11 +107,18 @@ func GenerateMarkdown(issues []model.Issue, title string) (string, error) {
 	// Quick Actions Section
 	sb.WriteString(generateQuickActions(issues))
 
+	// Precompute stable, unique slugs for TOC anchors and headings.
+	slugCounts := make(map[string]int, len(issues))
+	issueSlugs := make([]string, len(issues))
+	for idx, i := range issues {
+		base := createSlug(issueHeadingText(i))
+		issueSlugs[idx] = uniqueSlug(base, slugCounts)
+	}
+
 	// Table of Contents
 	sb.WriteString("## Table of Contents\n\n")
-	for _, i := range issues {
-		// Create a slug for the anchor (lowercase, hyphens for spaces)
-		slug := createSlug(i.ID)
+	for idx, i := range issues {
+		slug := issueSlugs[idx]
 		statusIcon := getStatusEmoji(string(i.Status))
 		sb.WriteString(fmt.Sprintf("- [%s %s %s](#%s)\n", statusIcon, i.ID, i.Title, slug))
 	}
@@ -131,9 +140,11 @@ func GenerateMarkdown(issues []model.Issue, title string) (string, error) {
 	sb.WriteString("---\n\n")
 
 	// Individual Issues
-	for _, i := range issues {
+	for idx, i := range issues {
 		typeIcon := getTypeEmoji(string(i.IssueType))
-		sb.WriteString(fmt.Sprintf("## %s %s %s\n\n", typeIcon, i.ID, i.Title))
+		slug := issueSlugs[idx]
+		sb.WriteString(fmt.Sprintf("<a id=\"%s\"></a>\n\n", slug))
+		sb.WriteString(fmt.Sprintf("## %s\n\n", issueHeadingText(i)))
 
 		// Metadata Table
 		sb.WriteString("| Property | Value |\n|----------|-------|\n")
@@ -220,10 +231,28 @@ func GenerateMarkdown(issues []model.Issue, title string) (string, error) {
 	return sb.String(), nil
 }
 
-// createSlug creates a URL-friendly slug from an ID
-func createSlug(id string) string {
+func issueHeadingText(i model.Issue) string {
+	typeIcon := getTypeEmoji(string(i.IssueType))
+	return fmt.Sprintf("%s %s %s", typeIcon, i.ID, i.Title)
+}
+
+func uniqueSlug(base string, counts map[string]int) string {
+	if base == "" {
+		base = "section"
+	}
+	if count, ok := counts[base]; ok {
+		count++
+		counts[base] = count
+		return fmt.Sprintf("%s-%d", base, count)
+	}
+	counts[base] = 0
+	return base
+}
+
+// createSlug creates a URL-friendly slug from heading text.
+func createSlug(text string) string {
 	// Convert to lowercase and replace non-alphanumeric with hyphens
-	slug := strings.ToLower(id)
+	slug := strings.ToLower(text)
 	slug = slugNonAlphanumericRegex.ReplaceAllString(slug, "-")
 	slug = strings.Trim(slug, "-")
 	return slug
@@ -237,11 +266,15 @@ func getStatusEmoji(status string) string {
 		return "🔵"
 	case "blocked":
 		return "🔴"
-	case "closed":
+	case "closed", "tombstone":
 		return "⚫"
 	default:
 		return "⚪"
 	}
+}
+
+func isClosedLikeStatus(status model.Status) bool {
+	return status == model.StatusClosed || status == model.StatusTombstone
 }
 
 func getTypeEmoji(issueType string) string {
@@ -286,8 +319,8 @@ func SaveMarkdownToFile(issues []model.Issue, filename string) error {
 
 	// Sort issues for the report: Open first, then priority, then date
 	sort.Slice(issuesCopy, func(i, j int) bool {
-		iClosed := issuesCopy[i].Status == model.StatusClosed
-		jClosed := issuesCopy[j].Status == model.StatusClosed
+		iClosed := isClosedLikeStatus(issuesCopy[i].Status)
+		jClosed := isClosedLikeStatus(issuesCopy[j].Status)
 		if iClosed != jClosed {
 			return !iClosed
 		}
@@ -322,7 +355,7 @@ func generateQuickActions(issues []model.Issue) string {
 		case model.StatusBlocked:
 			blockedIDs = append(blockedIDs, escapedID)
 		}
-		if i.Status != model.StatusClosed && i.Priority <= 1 {
+		if !isClosedLikeStatus(i.Status) && i.Priority <= 1 {
 			highPriorityIDs = append(highPriorityIDs, escapedID)
 		}
 	}
@@ -373,7 +406,7 @@ func generateIssueCommands(issue model.Issue) string {
 	var sb strings.Builder
 
 	// Skip command snippets for closed issues
-	if issue.Status == model.StatusClosed {
+	if isClosedLikeStatus(issue.Status) {
 		return ""
 	}
 

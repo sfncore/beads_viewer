@@ -258,6 +258,26 @@ func TestGenerateEnhancedRecommendations_WithIssues(t *testing.T) {
 	}
 }
 
+func TestTopWhatIfDeltas_SkipsTombstone(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "A", Title: "Removed blocker", Status: model.StatusTombstone},
+		{
+			ID:     "B",
+			Title:  "Blocked work",
+			Status: model.StatusBlocked,
+			Dependencies: []*model.Dependency{
+				{IssueID: "B", DependsOnID: "A", Type: model.DepBlocks},
+			},
+		},
+	}
+
+	analyzer := NewAnalyzer(issues)
+	results := analyzer.TopWhatIfDeltas(10)
+	if len(results) != 0 {
+		t.Fatalf("expected tombstone to be excluded, got %d results", len(results))
+	}
+}
+
 func TestGenerateEnhancedRecommendations_CappedAt10(t *testing.T) {
 	now := time.Now()
 	var issues []model.Issue

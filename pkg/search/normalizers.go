@@ -16,6 +16,8 @@ func normalizeStatus(status string) float64 {
 		return 0.5
 	case "closed":
 		return 0.1
+	case "tombstone":
+		return 0.0
 	default:
 		return 0.5
 	}
@@ -59,5 +61,12 @@ func normalizeRecency(updatedAt time.Time) float64 {
 		return 0.5
 	}
 	daysSinceUpdate := time.Since(updatedAt).Hours() / 24
-	return math.Exp(-daysSinceUpdate / 30)
+	if daysSinceUpdate < 0 {
+		return 1.0
+	}
+	score := math.Exp(-daysSinceUpdate / 30)
+	if score > 1.0 {
+		return 1.0
+	}
+	return score
 }

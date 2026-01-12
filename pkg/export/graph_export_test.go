@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
@@ -115,6 +116,83 @@ func TestExportGraph_DOT(t *testing.T) {
 	}
 }
 
+func TestExportGraph_DOT_EscapesBackslashesInIDs(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "bv\\1", Title: "First Issue", Status: model.StatusOpen, Priority: 1},
+		{ID: "bv\\2", Title: "Second Issue", Status: model.StatusClosed, Priority: 2,
+			Dependencies: []*model.Dependency{
+				{IssueID: "bv\\2", DependsOnID: "bv\\1", Type: model.DepBlocks},
+			},
+		},
+	}
+
+	analyzer := analysis.NewAnalyzer(issues)
+	stats := analyzer.Analyze()
+
+	config := GraphExportConfig{
+		Format: GraphFormatDOT,
+	}
+
+	result, err := ExportGraph(issues, &stats, config)
+	if err != nil {
+		t.Fatalf("ExportGraph failed: %v", err)
+	}
+
+	if !strings.Contains(result.Graph, "\"bv\\\\1\"") {
+		t.Error("DOT output should escape backslashes in node ID bv\\1")
+	}
+
+	if !strings.Contains(result.Graph, "\"bv\\\\2\"") {
+		t.Error("DOT output should escape backslashes in node ID bv\\2")
+	}
+
+	if !strings.Contains(result.Graph, "\"bv\\\\2\" -> \"bv\\\\1\"") {
+		t.Error("DOT output should escape backslashes in edge IDs")
+	}
+}
+
+func TestExportGraph_DOT_TruncationUTF8(t *testing.T) {
+	title := strings.Repeat("å", 20) // 40 bytes, 20 runes
+	issues := []model.Issue{
+		{ID: "bv-utf8", Title: title, Status: model.StatusOpen, Priority: 1},
+	}
+
+	analyzer := analysis.NewAnalyzer(issues)
+	stats := analyzer.Analyze()
+
+	config := GraphExportConfig{Format: GraphFormatDOT}
+	result, err := ExportGraph(issues, &stats, config)
+	if err != nil {
+		t.Fatalf("ExportGraph failed: %v", err)
+	}
+
+	if !utf8.ValidString(result.Graph) {
+		t.Fatal("DOT output should be valid UTF-8")
+	}
+}
+
+func TestExportGraph_DOT_EscapesNewlinesInLabels(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "bv-1", Title: "Hello\nWorld", Status: model.StatusOpen, Priority: 1},
+	}
+
+	analyzer := analysis.NewAnalyzer(issues)
+	stats := analyzer.Analyze()
+
+	config := GraphExportConfig{Format: GraphFormatDOT}
+	result, err := ExportGraph(issues, &stats, config)
+	if err != nil {
+		t.Fatalf("ExportGraph failed: %v", err)
+	}
+
+	if strings.Contains(result.Graph, "Hello\nWorld") {
+		t.Error("DOT output should not contain raw newlines inside labels")
+	}
+	if !strings.Contains(result.Graph, "Hello World") {
+		t.Error("DOT output should replace newlines with spaces in labels")
+	}
+}
+
 func TestExportGraph_Mermaid(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "bv-1", Title: "First Issue", Status: model.StatusOpen, Priority: 1},
@@ -123,6 +201,7 @@ func TestExportGraph_Mermaid(t *testing.T) {
 				{IssueID: "bv-2", DependsOnID: "bv-1", Type: model.DepBlocks},
 			},
 		},
+		{ID: "tombstone-1", Title: "Removed Issue", Status: model.StatusTombstone, Priority: 3},
 	}
 
 	analyzer := analysis.NewAnalyzer(issues)
@@ -161,6 +240,30 @@ func TestExportGraph_Mermaid(t *testing.T) {
 	// Check for bold edge (blocks)
 	if !strings.Contains(result.Graph, "==>") {
 		t.Error("Mermaid output should contain bold edge for blocks dependency")
+	}
+
+	// Tombstone nodes should be styled as closed-like.
+	if !strings.Contains(result.Graph, "class tombstone-1 closed") {
+		t.Error("Mermaid output should style tombstone nodes as closed")
+	}
+}
+
+func TestExportGraph_DOT_TombstoneUsesClosedColor(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "tombstone-1", Title: "Removed Issue", Status: model.StatusTombstone, Priority: 3},
+	}
+
+	analyzer := analysis.NewAnalyzer(issues)
+	stats := analyzer.Analyze()
+
+	config := GraphExportConfig{Format: GraphFormatDOT}
+	result, err := ExportGraph(issues, &stats, config)
+	if err != nil {
+		t.Fatalf("ExportGraph failed: %v", err)
+	}
+
+	if !strings.Contains(result.Graph, "fillcolor=\"#CFD8DC\"") {
+		t.Error("DOT output should style tombstone nodes with the closed color")
 	}
 }
 

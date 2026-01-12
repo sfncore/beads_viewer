@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"runtime"
@@ -119,21 +120,24 @@ type WorkerHealth struct {
 
 // WorkerMetrics captures the most recent metrics snapshot.
 type WorkerMetrics struct {
-	ProcessingCount     uint64
-	ProcessingDuration  time.Duration
-	Phase1Duration      time.Duration
-	Phase2Duration      time.Duration
-	CoalesceCount       int64
-	QueueDepth          int64
-	SnapshotVersion     uint64
-	SnapshotSizeBytes   int64
-	PoolHits            uint64
-	PoolMisses          uint64
-	GCPauseDelta        time.Duration
-	SwapLatency         time.Duration
-	UIUpdateLatency     time.Duration
-	LastFileChangeAt    time.Time
-	LastSnapshotReadyAt time.Time
+	ProcessingCount      uint64
+	ProcessingDuration   time.Duration
+	Phase1Duration       time.Duration
+	Phase2Duration       time.Duration
+	CoalesceCount        int64
+	QueueDepth           int64
+	SnapshotVersion      uint64
+	SnapshotSizeBytes    int64
+	PoolHits             uint64
+	PoolMisses           uint64
+	GCPauseDelta         time.Duration
+	SwapLatency          time.Duration
+	UIUpdateLatency      time.Duration
+	LastFileChangeAt     time.Time
+	LastSnapshotReadyAt  time.Time
+	IncrementalListCount uint64
+	FullListCount        uint64
+	IncrementalListRatio float64
 }
 
 type workerMetrics struct {
@@ -152,6 +156,8 @@ type workerMetrics struct {
 	poolHits               atomic.Uint64
 	poolMisses             atomic.Uint64
 	snapshotVersion        atomic.Uint64
+	incrementalListCount   atomic.Uint64
+	fullListCount          atomic.Uint64
 }
 
 // BackgroundWorker manages background processing of beads data.
@@ -389,23 +395,32 @@ func (w *BackgroundWorker) Metrics() WorkerMetrics {
 	if unix := w.metrics.lastFileChangeUnixNano.Load(); unix > 0 {
 		lastFileChange = time.Unix(0, unix)
 	}
+	incremental := w.metrics.incrementalListCount.Load()
+	full := w.metrics.fullListCount.Load()
+	ratio := 0.0
+	if total := incremental + full; total > 0 {
+		ratio = float64(incremental) / float64(total)
+	}
 
 	return WorkerMetrics{
-		ProcessingCount:     w.metrics.processingCount.Load(),
-		ProcessingDuration:  time.Duration(w.metrics.lastProcessingNs.Load()),
-		Phase1Duration:      time.Duration(w.metrics.lastPhase1Ns.Load()),
-		Phase2Duration:      time.Duration(w.metrics.lastPhase2Ns.Load()),
-		CoalesceCount:       w.metrics.lastCoalesceCount.Load(),
-		QueueDepth:          w.metrics.lastQueueDepth.Load(),
-		SnapshotVersion:     w.metrics.snapshotVersion.Load(),
-		SnapshotSizeBytes:   w.metrics.lastSnapshotSizeBytes.Load(),
-		PoolHits:            w.metrics.poolHits.Load(),
-		PoolMisses:          w.metrics.poolMisses.Load(),
-		GCPauseDelta:        time.Duration(w.metrics.lastGCPauseDeltaNs.Load()),
-		SwapLatency:         time.Duration(w.metrics.lastSwapLatencyNs.Load()),
-		UIUpdateLatency:     time.Duration(w.metrics.lastUIUpdateLatencyNs.Load()),
-		LastSnapshotReadyAt: lastSnapshotReady,
-		LastFileChangeAt:    lastFileChange,
+		ProcessingCount:      w.metrics.processingCount.Load(),
+		ProcessingDuration:   time.Duration(w.metrics.lastProcessingNs.Load()),
+		Phase1Duration:       time.Duration(w.metrics.lastPhase1Ns.Load()),
+		Phase2Duration:       time.Duration(w.metrics.lastPhase2Ns.Load()),
+		CoalesceCount:        w.metrics.lastCoalesceCount.Load(),
+		QueueDepth:           w.metrics.lastQueueDepth.Load(),
+		SnapshotVersion:      w.metrics.snapshotVersion.Load(),
+		SnapshotSizeBytes:    w.metrics.lastSnapshotSizeBytes.Load(),
+		PoolHits:             w.metrics.poolHits.Load(),
+		PoolMisses:           w.metrics.poolMisses.Load(),
+		GCPauseDelta:         time.Duration(w.metrics.lastGCPauseDeltaNs.Load()),
+		SwapLatency:          time.Duration(w.metrics.lastSwapLatencyNs.Load()),
+		UIUpdateLatency:      time.Duration(w.metrics.lastUIUpdateLatencyNs.Load()),
+		LastSnapshotReadyAt:  lastSnapshotReady,
+		LastFileChangeAt:     lastFileChange,
+		IncrementalListCount: incremental,
+		FullListCount:        full,
+		IncrementalListRatio: ratio,
 	}
 }
 
@@ -546,6 +561,7 @@ func (w *BackgroundWorker) Start() error {
 			w.mu.Lock()
 			w.started = false
 			w.mu.Unlock()
+			w.closeTraceFile()
 			return err
 		}
 
@@ -1022,6 +1038,11 @@ func (w *BackgroundWorker) process() {
 		w.snapshot = snapshot
 		swapLatency = time.Since(swapStart)
 		version = w.metrics.snapshotVersion.Add(1)
+		if snapshot.IncrementalListUsed {
+			w.metrics.incrementalListCount.Add(1)
+		} else {
+			w.metrics.fullListCount.Add(1)
+		}
 	}
 	wasDirty := w.dirty
 	coalesced := w.coalesceCount.Load()
@@ -1256,6 +1277,35 @@ func (w *BackgroundWorker) buildSnapshot() *DataSnapshot {
 		runtime.ReadMemStats(&memBefore)
 	}
 
+	// Capture recipe state for this snapshot before loading (bv-2h40).
+	w.mu.RLock()
+	currentRecipe := w.currentRecipe
+	recipeID := w.currentRecipeID
+	recipeHash := w.currentRecipeHash
+	w.mu.RUnlock()
+
+	// Determine dataset tier using a fast line count (bv-9thm).
+	sourceLineCount := 0
+	tier := datasetTierUnknown
+	countErr := w.safeCompute("count_lines", func() error {
+		n, err := countJSONLLines(w.beadsPath)
+		if err != nil {
+			return err
+		}
+		sourceLineCount = n
+		tier = datasetTierForIssueCount(n)
+		return nil
+	})
+	if countErr != nil {
+		w.logEvent(LogLevelDebug, "snapshot_line_count_failed", map[string]any{
+			"path":  w.beadsPath,
+			"error": countErr.Error(),
+		})
+	}
+
+	// Huge tier: default to open-only unless the recipe explicitly includes closed/tombstone.
+	loadOpenOnly := tier == datasetTierHuge && !recipeIncludesClosedStatuses(currentRecipe)
+
 	// Load issues from file with panic recovery
 	var issues []model.Issue
 	var pooledRefs []*model.Issue
@@ -1263,12 +1313,18 @@ func (w *BackgroundWorker) buildSnapshot() *DataSnapshot {
 	loadErr := w.safeCompute("load", func() error {
 		var err error
 		var loaded loader.PooledIssues
-		loaded, err = loader.LoadIssuesFromFileWithOptionsPooled(w.beadsPath, loader.ParseOptions{
+		opts := loader.ParseOptions{
 			WarningHandler: func(msg string) {
 				loadWarnings = append(loadWarnings, msg)
 			},
 			BufferSize: envMaxLineSizeBytes(),
-		})
+		}
+		if loadOpenOnly {
+			opts.IssueFilter = func(i *model.Issue) bool {
+				return i.Status != model.StatusClosed && i.Status != model.StatusTombstone
+			}
+		}
+		loaded, err = loader.LoadIssuesFromFileWithOptionsPooled(w.beadsPath, opts)
 		if err == nil {
 			issues = loaded.Issues
 			pooledRefs = loaded.PoolRefs
@@ -1296,13 +1352,6 @@ func (w *BackgroundWorker) buildSnapshot() *DataSnapshot {
 	// Compute content hash for dedup
 	hash := analysis.ComputeDataHash(issues)
 
-	// Capture recipe state for this snapshot (bv-2h40).
-	w.mu.RLock()
-	currentRecipe := w.currentRecipe
-	recipeID := w.currentRecipeID
-	recipeHash := w.currentRecipeHash
-	w.mu.RUnlock()
-
 	// Check if content is unchanged (dedup optimization)
 	w.mu.Lock()
 	forceNext := w.forceNext
@@ -1323,11 +1372,38 @@ func (w *BackgroundWorker) buildSnapshot() *DataSnapshot {
 		return nil
 	}
 
+	w.mu.RLock()
+	prevSnapshot := w.snapshot
+	w.mu.RUnlock()
+
+	var diff *analysis.IssueDiff
+	if prevSnapshot != nil {
+		diffValue := analysis.ComputeIssueDiff(prevSnapshot.Issues, issues)
+		diff = &diffValue
+		if w.logLevel >= LogLevelDebug || w.traceFile != nil {
+			w.logEvent(LogLevelDebug, "snapshot_diff", map[string]any{
+				"added":              len(diffValue.Added),
+				"removed":            len(diffValue.Removed),
+				"modified":           len(diffValue.Modified),
+				"content_changed":    len(diffValue.ContentChanged),
+				"dependency_changed": len(diffValue.DependencyChanged),
+				"unchanged":          len(diffValue.Unchanged),
+				"total_prev":         len(prevSnapshot.Issues),
+				"total_new":          len(issues),
+			})
+		}
+	}
+
 	// Build snapshot (includes Phase 1 analysis) with panic recovery
 	var snapshot *DataSnapshot
 	analyzeStart := time.Now()
 	analyzeErr := w.safeCompute("analyze_phase1", func() error {
-		builder := NewSnapshotBuilder(issues).WithRecipe(currentRecipe)
+		builder := NewSnapshotBuilder(issues).
+			WithRecipe(currentRecipe).
+			WithBuildConfig(snapshotBuildConfigForTier(tier))
+		if prevSnapshot != nil {
+			builder.WithPreviousSnapshot(prevSnapshot, diff)
+		}
 		snapshot = builder.Build()
 		return nil
 	})
@@ -1367,6 +1443,13 @@ func (w *BackgroundWorker) buildSnapshot() *DataSnapshot {
 		snapshot.RecipeName = recipeID
 		snapshot.RecipeHash = recipeHash
 		snapshot.pooledIssues = pooledRefs
+		snapshot.DatasetTier = tier
+		snapshot.SourceIssueCountHint = sourceLineCount
+		snapshot.LoadedOpenOnly = loadOpenOnly
+		if loadOpenOnly && sourceLineCount > len(snapshot.Issues) {
+			snapshot.TruncatedCount = sourceLineCount - len(snapshot.Issues)
+		}
+		snapshot.LargeDatasetWarning = largeDatasetWarning(tier, sourceLineCount, len(snapshot.Issues), loadOpenOnly)
 	} else {
 		loader.ReturnIssuePtrsToPool(pooledRefs)
 	}
@@ -1407,6 +1490,80 @@ func (w *BackgroundWorker) buildSnapshot() *DataSnapshot {
 	}
 
 	return snapshot
+}
+
+func recipeIncludesClosedStatuses(r *recipe.Recipe) bool {
+	if r == nil {
+		return false
+	}
+	for _, s := range r.Filters.Status {
+		switch strings.TrimSpace(strings.ToLower(s)) {
+		case string(model.StatusClosed), string(model.StatusTombstone):
+			return true
+		}
+	}
+	return false
+}
+
+func largeDatasetWarning(tier datasetTier, sourceHint, loaded int, openOnly bool) string {
+	switch tier {
+	case datasetTierLarge:
+		n := loaded
+		if sourceHint > 0 {
+			n = sourceHint
+		}
+		return fmt.Sprintf("⚠ large %s issues", compactCount(n))
+	case datasetTierHuge:
+		if openOnly && sourceHint > 0 {
+			return fmt.Sprintf("⚠ huge open-only %s/%s", compactCount(loaded), compactCount(sourceHint))
+		}
+		n := loaded
+		if sourceHint > 0 {
+			n = sourceHint
+		}
+		return fmt.Sprintf("⚠ huge %s issues", compactCount(n))
+	default:
+		return ""
+	}
+}
+
+func countJSONLLines(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	const bufSize = 32 * 1024
+	buf := make([]byte, bufSize)
+	lines := 0
+	sawAny := false
+	lastByte := byte(0)
+
+	for {
+		n, readErr := f.Read(buf)
+		if n > 0 {
+			sawAny = true
+			lastByte = buf[n-1]
+			for _, b := range buf[:n] {
+				if b == '\n' {
+					lines++
+				}
+			}
+		}
+		if readErr == nil {
+			continue
+		}
+		if readErr == io.EOF {
+			break
+		}
+		return 0, readErr
+	}
+
+	if sawAny && lastByte != '\n' {
+		lines++
+	}
+	return lines, nil
 }
 
 func envMaxLineSizeBytes() int {

@@ -1,11 +1,29 @@
 package analysis
 
 import (
+	"container/heap"
 	"context"
 	"sort"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
+
+// intHeap implements heap.Interface for a min-heap of ints.
+// Used for deterministic O(log n) extraction in Kahn's algorithm.
+type intHeap []int
+
+func (h intHeap) Len() int           { return len(h) }
+func (h intHeap) Less(i, j int) bool { return h[i] < h[j] }
+func (h intHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+
+func (h *intHeap) Push(x any) { *h = append(*h, x.(int)) }
+func (h *intHeap) Pop() any {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
+}
 
 // AdvancedInsightsConfig holds caps and limits for advanced analysis features.
 // All caps ensure deterministic, bounded outputs suitable for agents.
@@ -340,7 +358,7 @@ func (a *Analyzer) generateTopKSet(k int) *TopKSetResult {
 	// Get actionable (non-closed) issues as candidates
 	var candidates []string
 	for id, issue := range a.issueMap {
-		if issue.Status != model.StatusClosed {
+		if !isClosedLikeStatus(issue.Status) {
 			candidates = append(candidates, id)
 		}
 	}
@@ -425,7 +443,7 @@ func (a *Analyzer) computeMarginalUnblocks(issueID string, alreadyCompleted map[
 
 	for _, issue := range a.issueMap {
 		// Skip closed issues
-		if issue.Status == model.StatusClosed {
+		if isClosedLikeStatus(issue.Status) {
 			continue
 		}
 		// Skip if already "completed" in our simulation
@@ -456,7 +474,7 @@ func (a *Analyzer) computeMarginalUnblocks(issueID string, alreadyCompleted map[
 
 			// Check if there's another open blocker (not already completed)
 			if blocker, exists := a.issueMap[dep.DependsOnID]; exists {
-				if blocker.Status != model.StatusClosed && !alreadyCompleted[dep.DependsOnID] {
+				if !isClosedLikeStatus(blocker.Status) && !alreadyCompleted[dep.DependsOnID] {
 					wouldBeBlocked = true
 					break
 				}
@@ -484,14 +502,14 @@ func (a *Analyzer) generateCoverageSet(limit int) *CoverageSetResult {
 	type edge struct{ from, to string }
 	var edges []edge
 	for id, issue := range a.issueMap {
-		if issue.Status == model.StatusClosed {
+		if isClosedLikeStatus(issue.Status) {
 			continue
 		}
 		for _, dep := range issue.Dependencies {
 			if dep == nil || dep.Type != model.DepBlocks {
 				continue
 			}
-			if target, ok := a.issueMap[dep.DependsOnID]; ok && target.Status != model.StatusClosed {
+			if target, ok := a.issueMap[dep.DependsOnID]; ok && !isClosedLikeStatus(target.Status) {
 				edges = append(edges, edge{from: id, to: dep.DependsOnID})
 			}
 		}
@@ -606,7 +624,7 @@ func (a *Analyzer) generateKPaths(k int, pathLengthCap int) *KPathsResult {
 
 	// Collect non-closed issues
 	for id, issue := range a.issueMap {
-		if issue.Status != model.StatusClosed {
+		if !isClosedLikeStatus(issue.Status) {
 			idToIndex[id] = len(nodes)
 			nodes = append(nodes, nodeInfo{id: id, index: len(nodes)})
 		}
@@ -655,30 +673,29 @@ func (a *Analyzer) generateKPaths(k int, pathLengthCap int) *KPathsResult {
 		sort.Ints(adj[i])
 	}
 
-	// Kahn's algorithm for topological sort
+	// Kahn's algorithm for topological sort using min-heap for determinism
+	// Min-heap gives O(log k) per operation vs O(k log k) for sorting each iteration
 	var topoOrder []int
-	queue := make([]int, 0, n)
+	pq := &intHeap{}
 	for i := 0; i < n; i++ {
 		if inDegree[i] == 0 {
-			queue = append(queue, i)
+			*pq = append(*pq, i)
 		}
 	}
-	sort.Ints(queue) // deterministic starting order
+	heap.Init(pq) // O(k) heapify
 
 	tempInDegree := make([]int, n)
 	copy(tempInDegree, inDegree)
 
-	for len(queue) > 0 {
-		// Sort queue for deterministic processing (always pick smallest index first)
-		sort.Ints(queue)
-		u := queue[0]
-		queue = queue[1:]
+	for pq.Len() > 0 {
+		// Pop smallest index for deterministic processing - O(log k)
+		u := heap.Pop(pq).(int)
 		topoOrder = append(topoOrder, u)
 
 		for _, v := range adj[u] {
 			tempInDegree[v]--
 			if tempInDegree[v] == 0 {
-				queue = append(queue, v)
+				heap.Push(pq, v) // O(log k)
 			}
 		}
 	}
@@ -812,7 +829,7 @@ func (a *Analyzer) generateParallelCut(limit int) *ParallelCutResult {
 	// Build map of non-closed issues
 	openIssues := make(map[string]bool)
 	for id, issue := range a.issueMap {
-		if issue.Status != model.StatusClosed {
+		if !isClosedLikeStatus(issue.Status) {
 			openIssues[id] = true
 		}
 	}

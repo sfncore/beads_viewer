@@ -56,7 +56,7 @@ func (s *Snapshot) computeCounts() {
 	s.TotalCount = len(s.Issues)
 	for _, issue := range s.Issues {
 		switch issue.Status {
-		case model.StatusClosed:
+		case model.StatusClosed, model.StatusTombstone:
 			s.ClosedCount++
 		case model.StatusBlocked:
 			s.BlockedCount++
@@ -169,10 +169,10 @@ func CompareSnapshots(from, to *Snapshot) *SnapshotDiff {
 
 		// Check for status changes
 		isStatusChange := false
-		if fromIssue.Status != model.StatusClosed && toIssue.Status == model.StatusClosed {
+		if !isClosedLikeStatus(fromIssue.Status) && isClosedLikeStatus(toIssue.Status) {
 			diff.ClosedIssues = append(diff.ClosedIssues, toIssue)
 			isStatusChange = true
-		} else if fromIssue.Status == model.StatusClosed && toIssue.Status != model.StatusClosed {
+		} else if isClosedLikeStatus(fromIssue.Status) && !isClosedLikeStatus(toIssue.Status) {
 			diff.ReopenedIssues = append(diff.ReopenedIssues, toIssue)
 			isStatusChange = true
 		}

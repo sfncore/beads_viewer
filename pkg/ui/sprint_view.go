@@ -86,18 +86,17 @@ func (m Model) renderSprintDashboard() string {
 		if beadIDSet[iss.ID] {
 			totalBeads++
 			sprintIssues = append(sprintIssues, iss)
-			switch iss.Status {
-			case model.StatusClosed:
+			if isClosedLikeStatus(iss.Status) {
 				closedBeads++
+				continue
+			}
+			switch iss.Status {
 			case model.StatusBlocked:
 				blockedBeads++
-				openBeads++
 			case model.StatusInProgress:
 				inProgressBeads++
-				openBeads++
-			default:
-				openBeads++
 			}
+			openBeads++
 		}
 	}
 
@@ -210,16 +209,18 @@ func (m Model) renderSprintDashboard() string {
 		iss := sprintIssues[i]
 		statusIcon := "○"
 		statusStyle := valStyle
-		switch iss.Status {
-		case model.StatusClosed:
+		if isClosedLikeStatus(iss.Status) {
 			statusIcon = "✓"
 			statusStyle = t.Renderer.NewStyle().Foreground(t.Open)
-		case model.StatusInProgress:
-			statusIcon = "⏳"
-			statusStyle = t.Renderer.NewStyle().Foreground(t.Feature)
-		case model.StatusBlocked:
-			statusIcon = "⛔"
-			statusStyle = t.Renderer.NewStyle().Foreground(t.Blocked)
+		} else {
+			switch iss.Status {
+			case model.StatusInProgress:
+				statusIcon = "⏳"
+				statusStyle = t.Renderer.NewStyle().Foreground(t.Feature)
+			case model.StatusBlocked:
+				statusIcon = "⛔"
+				statusStyle = t.Renderer.NewStyle().Foreground(t.Blocked)
+			}
 		}
 		sb.WriteString(statusStyle.Render(fmt.Sprintf("  %s %s - %s\n", statusIcon, iss.ID, truncateStrSprint(iss.Title, 40))))
 	}

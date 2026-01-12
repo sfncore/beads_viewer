@@ -4,6 +4,7 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"time"
 
@@ -11,6 +12,110 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
 )
+
+type datasetTier int
+
+const (
+	datasetTierUnknown datasetTier = iota
+	datasetTierSmall
+	datasetTierMedium
+	datasetTierLarge
+	datasetTierHuge
+)
+
+func datasetTierForIssueCount(total int) datasetTier {
+	switch {
+	case total <= 0:
+		return datasetTierUnknown
+	case total < 1000:
+		return datasetTierSmall
+	case total < 5000:
+		return datasetTierMedium
+	case total < 20000:
+		return datasetTierLarge
+	default:
+		return datasetTierHuge
+	}
+}
+
+func (t datasetTier) String() string {
+	switch t {
+	case datasetTierSmall:
+		return "small"
+	case datasetTierMedium:
+		return "medium"
+	case datasetTierLarge:
+		return "large"
+	case datasetTierHuge:
+		return "huge"
+	default:
+		return "unknown"
+	}
+}
+
+func isClosedLikeStatus(status model.Status) bool {
+	return status == model.StatusClosed || status == model.StatusTombstone
+}
+
+type snapshotBuildConfig struct {
+	PrecomputeTriage      bool
+	PrecomputeTree        bool
+	PrecomputeBoard       bool
+	PrecomputeGraphLayout bool
+	PrecomputeInsights    bool
+	SkipPhase2            bool
+}
+
+func snapshotBuildConfigDefault() snapshotBuildConfig {
+	return snapshotBuildConfig{
+		PrecomputeTriage:      true,
+		PrecomputeTree:        true,
+		PrecomputeBoard:       true,
+		PrecomputeGraphLayout: true,
+		PrecomputeInsights:    true,
+		SkipPhase2:            false,
+	}
+}
+
+func snapshotBuildConfigForTier(tier datasetTier) snapshotBuildConfig {
+	cfg := snapshotBuildConfigDefault()
+	switch tier {
+	case datasetTierLarge:
+		cfg.PrecomputeTriage = false
+		cfg.PrecomputeTree = false
+		cfg.PrecomputeBoard = false
+		cfg.PrecomputeGraphLayout = false
+		cfg.PrecomputeInsights = false
+	case datasetTierHuge:
+		cfg.PrecomputeTriage = false
+		cfg.PrecomputeTree = false
+		cfg.PrecomputeBoard = false
+		cfg.PrecomputeGraphLayout = false
+		cfg.PrecomputeInsights = false
+		cfg.SkipPhase2 = true
+	}
+	return cfg
+}
+
+func compactCount(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%dm", n/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%dk", n/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
+const incrementalListMaxChangeRatio = 0.2
+
+// IssueDiffStats summarizes the change volume between snapshots.
+type IssueDiffStats struct {
+	Changed int
+	Total   int
+	Ratio   float64
+}
 
 // DataSnapshot is an immutable, self-contained representation of all data
 // the UI needs to render. Once created, it never changes - this is critical
@@ -64,6 +169,20 @@ type DataSnapshot struct {
 	DataHash   string    // Hash of source data for cache validation
 	RecipeName string    // Active recipe name for this snapshot (bv-2h40)
 	RecipeHash string    // Fingerprint of active recipe for this snapshot (bv-4ilb)
+	// DatasetTier is a tiered performance mode for large datasets (bv-9thm).
+	// When unknown, normal behavior applies.
+	DatasetTier datasetTier
+	// SourceIssueCountHint is an approximate total issue count from the source file
+	// (e.g., JSONL line count). This may be 0 if unavailable.
+	SourceIssueCountHint int
+	// LoadedOpenOnly indicates the snapshot intentionally excluded closed/tombstone
+	// issues for performance (huge tier).
+	LoadedOpenOnly bool
+	// TruncatedCount is an approximate count of issues excluded by load policy.
+	// This may include invalid/empty lines when computed from a line count hint.
+	TruncatedCount int
+	// LargeDatasetWarning is a short, user-facing warning to show in the footer.
+	LargeDatasetWarning string
 	// LoadWarningCount is the number of non-fatal parse warnings encountered while loading.
 	// In TUI mode, warnings must not be printed to stderr during render.
 	LoadWarningCount int
@@ -72,6 +191,12 @@ type DataSnapshot struct {
 	// Phase2Ready is true when expensive metrics (PageRank, Betweenness, etc.) are computed
 	// UI can render immediately with Phase 1 data, then refresh when Phase 2 completes
 	Phase2Ready bool
+
+	// Incremental update metadata (bv-5mzz).
+	IssueDiff      *analysis.IssueDiff
+	IssueDiffStats IssueDiffStats
+	// IncrementalListUsed reports whether list items were rebuilt incrementally.
+	IncrementalListUsed bool
 
 	// Error state (for graceful degradation)
 	LoadError    error     // Non-nil if last load had recoverable errors
@@ -147,6 +272,11 @@ type SnapshotBuilder struct {
 	analyzer *analysis.Analyzer
 	analysis *analysis.GraphStats
 	recipe   *recipe.Recipe
+	cfg      snapshotBuildConfig
+
+	prevSnapshot *DataSnapshot
+	diff         *analysis.IssueDiff
+	diffStats    IssueDiffStats
 }
 
 // NewSnapshotBuilder creates a builder for constructing a DataSnapshot.
@@ -154,6 +284,7 @@ func NewSnapshotBuilder(issues []model.Issue) *SnapshotBuilder {
 	return &SnapshotBuilder{
 		issues:   issues,
 		analyzer: analysis.NewAnalyzer(issues),
+		cfg:      snapshotBuildConfigDefault(),
 	}
 }
 
@@ -168,6 +299,19 @@ func (b *SnapshotBuilder) WithRecipe(r *recipe.Recipe) *SnapshotBuilder {
 	return b
 }
 
+func (b *SnapshotBuilder) WithBuildConfig(cfg snapshotBuildConfig) *SnapshotBuilder {
+	b.cfg = cfg
+	return b
+}
+
+// WithPreviousSnapshot enables incremental list-item rebuilds when possible.
+func (b *SnapshotBuilder) WithPreviousSnapshot(prev *DataSnapshot, diff *analysis.IssueDiff) *SnapshotBuilder {
+	b.prevSnapshot = prev
+	b.diff = diff
+	b.diffStats = issueDiffStats(diff)
+	return b
+}
+
 // Build constructs the final immutable DataSnapshot.
 // This performs all necessary computations that should happen in the background.
 // Uses AnalyzeAsync() so Phase 2 metrics compute in background - check Phase2Ready
@@ -178,8 +322,8 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 	// Apply default sorting to match the legacy reload path:
 	// Open first, then priority (ascending), then created date (newest first).
 	sort.Slice(issues, func(i, j int) bool {
-		iClosed := issues[i].Status == model.StatusClosed
-		jClosed := issues[j].Status == model.StatusClosed
+		iClosed := isClosedLikeStatus(issues[i].Status)
+		jClosed := isClosedLikeStatus(issues[j].Status)
 		if iClosed != jClosed {
 			return !iClosed
 		}
@@ -193,7 +337,19 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 	// Use AnalyzeAsync to allow Phase 2 to run in background
 	graphStats := b.analysis
 	if graphStats == nil {
-		graphStats = b.analyzer.AnalyzeAsync(context.Background())
+		if b.cfg.SkipPhase2 {
+			// Still compute Phase 1 metrics, but skip expensive Phase 2 work.
+			cfg := analysis.ConfigForSize(len(issues), 0)
+			cfg.ComputePageRank = false
+			cfg.ComputeBetweenness = false
+			cfg.ComputeEigenvector = false
+			cfg.ComputeHITS = false
+			cfg.ComputeCriticalPath = false
+			cfg.ComputeCycles = false
+			graphStats = b.analyzer.AnalyzeAsyncWithConfig(context.Background(), cfg)
+		} else {
+			graphStats = b.analyzer.AnalyzeAsync(context.Background())
+		}
 	}
 
 	// Build lookup map
@@ -206,7 +362,7 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 	cOpen, cReady, cBlocked, cClosed := 0, 0, 0, 0
 	for i := range issues {
 		issue := &issues[i]
-		if issue.Status == model.StatusClosed {
+		if isClosedLikeStatus(issue.Status) {
 			cClosed++
 			continue
 		}
@@ -223,7 +379,7 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 			if dep == nil || !dep.Type.IsBlocking() {
 				continue
 			}
-			if blocker, exists := issueMap[dep.DependsOnID]; exists && blocker.Status != model.StatusClosed {
+			if blocker, exists := issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
 				isBlocked = true
 				break
 			}
@@ -245,59 +401,91 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 	}
 
 	// Build list items with graph scores (respecting recipe filtering/sorting when present).
-	listItems := make([]IssueItem, len(viewIssues))
-	for i := range viewIssues {
-		listItems[i] = IssueItem{
-			Issue:      viewIssues[i],
-			GraphScore: graphStats.GetPageRankScore(viewIssues[i].ID),
-			Impact:     graphStats.GetCriticalPathScore(viewIssues[i].ID),
-			RepoPrefix: ExtractRepoPrefix(viewIssues[i].ID),
-		}
+	listItemsIncremental := false
+	statsForListItems := graphStats
+	// If analysis was computed asynchronously for this snapshot build, treat Phase 2 scores
+	// as not-yet-available to keep list items deterministic (they will be refreshed when
+	// Phase 2 completes via Phase2ReadyMsg).
+	if b.analysis == nil {
+		statsForListItems = nil
+	}
+	listItems := buildListItems(viewIssues, statsForListItems)
+	if shouldUseIncrementalList(b.prevSnapshot, b.diff, b.recipe, b.diffStats) {
+		listItems = buildListItemsIncremental(viewIssues, statsForListItems, b.prevSnapshot.ListItems, b.diff)
+		listItemsIncremental = true
 	}
 
-	// Compute triage insights
-	triageResult := analysis.ComputeTriageFromAnalyzer(b.analyzer, graphStats, issues, analysis.TriageOptions{}, time.Now())
-	triageScores := make(map[string]float64, len(triageResult.Recommendations))
-	triageReasons := make(map[string]analysis.TriageReasons, len(triageResult.Recommendations))
-	quickWinSet := make(map[string]bool, len(triageResult.QuickWins))
-	blockerSet := make(map[string]bool, len(triageResult.BlockersToClear))
-	unblocksMap := make(map[string][]string, len(triageResult.Recommendations))
+	var (
+		triageScores  map[string]float64
+		triageReasons map[string]analysis.TriageReasons
+		quickWinSet   map[string]bool
+		blockerSet    map[string]bool
+		unblocksMap   map[string][]string
+	)
 
-	for _, rec := range triageResult.Recommendations {
-		triageScores[rec.ID] = rec.Score
-		if len(rec.Reasons) > 0 {
-			triageReasons[rec.ID] = analysis.TriageReasons{
-				Primary:    rec.Reasons[0],
-				All:        rec.Reasons,
-				ActionHint: rec.Action,
+	// Compute triage insights (may be skipped for large/huge datasets; bv-9thm).
+	if b.cfg.PrecomputeTriage {
+		triageResult := analysis.ComputeTriageFromAnalyzer(b.analyzer, graphStats, issues, analysis.TriageOptions{}, time.Now())
+		triageScores = make(map[string]float64, len(triageResult.Recommendations))
+		triageReasons = make(map[string]analysis.TriageReasons, len(triageResult.Recommendations))
+		quickWinSet = make(map[string]bool, len(triageResult.QuickWins))
+		blockerSet = make(map[string]bool, len(triageResult.BlockersToClear))
+		unblocksMap = make(map[string][]string, len(triageResult.Recommendations))
+
+		for _, rec := range triageResult.Recommendations {
+			triageScores[rec.ID] = rec.Score
+			if len(rec.Reasons) > 0 {
+				triageReasons[rec.ID] = analysis.TriageReasons{
+					Primary:    rec.Reasons[0],
+					All:        rec.Reasons,
+					ActionHint: rec.Action,
+				}
 			}
+			unblocksMap[rec.ID] = rec.UnblocksIDs
 		}
-		unblocksMap[rec.ID] = rec.UnblocksIDs
-	}
-	for _, qw := range triageResult.QuickWins {
-		quickWinSet[qw.ID] = true
-	}
-	for _, bl := range triageResult.BlockersToClear {
-		blockerSet[bl.ID] = true
+		for _, qw := range triageResult.QuickWins {
+			quickWinSet[qw.ID] = true
+		}
+		for _, bl := range triageResult.BlockersToClear {
+			blockerSet[bl.ID] = true
+		}
+
+		// Update list items with triage data
+		for i := range listItems {
+			id := listItems[i].Issue.ID
+			listItems[i].TriageScore = triageScores[id]
+			if reasons, exists := triageReasons[id]; exists {
+				listItems[i].TriageReason = reasons.Primary
+				listItems[i].TriageReasons = reasons.All
+			}
+			listItems[i].IsQuickWin = quickWinSet[id]
+			listItems[i].IsBlocker = blockerSet[id]
+			listItems[i].UnblocksCount = len(unblocksMap[id])
+		}
 	}
 
-	// Update list items with triage data
-	for i := range listItems {
-		id := listItems[i].Issue.ID
-		listItems[i].TriageScore = triageScores[id]
-		if reasons, exists := triageReasons[id]; exists {
-			listItems[i].TriageReason = reasons.Primary
-			listItems[i].TriageReasons = reasons.All
-		}
-		listItems[i].IsQuickWin = quickWinSet[id]
-		listItems[i].IsBlocker = blockerSet[id]
-		listItems[i].UnblocksCount = len(unblocksMap[id])
+	var (
+		treeRoots   []*IssueTreeNode
+		treeNodeMap map[string]*IssueTreeNode
+	)
+	if b.cfg.PrecomputeTree {
+		treeRoots, treeNodeMap = buildIssueTreeNodes(issues)
 	}
 
-	treeRoots, treeNodeMap := buildIssueTreeNodes(issues)
-	boardState := buildBoardState(issues)
-	insights := graphStats.GenerateInsights(len(issues))
-	graphLayout := buildGraphLayout(issues, graphStats)
+	var boardState *BoardState
+	if b.cfg.PrecomputeBoard {
+		boardState = buildBoardState(issues)
+	}
+
+	insights := analysis.Insights{Stats: graphStats, ClusterDensity: graphStats.Density}
+	if b.cfg.PrecomputeInsights {
+		insights = graphStats.GenerateInsights(len(issues))
+	}
+
+	var graphLayout *GraphLayout
+	if b.cfg.PrecomputeGraphLayout {
+		graphLayout = buildGraphLayout(issues, graphStats)
+	}
 
 	return &DataSnapshot{
 		Issues:        issues,
@@ -322,7 +510,125 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 		GraphLayout:   graphLayout,
 		CreatedAt:     time.Now(),
 		Phase2Ready:   graphStats.IsPhase2Ready(),
+		IssueDiff:     b.diff,
+		IssueDiffStats: IssueDiffStats{
+			Changed: b.diffStats.Changed,
+			Total:   b.diffStats.Total,
+			Ratio:   b.diffStats.Ratio,
+		},
+		IncrementalListUsed: listItemsIncremental,
 	}
+}
+
+func issueDiffStats(diff *analysis.IssueDiff) IssueDiffStats {
+	if diff == nil {
+		return IssueDiffStats{}
+	}
+	changed := len(diff.Added) + len(diff.Removed) + len(diff.Modified)
+	total := changed + len(diff.Unchanged)
+	ratio := 0.0
+	if total > 0 {
+		ratio = float64(changed) / float64(total)
+	}
+	return IssueDiffStats{
+		Changed: changed,
+		Total:   total,
+		Ratio:   ratio,
+	}
+}
+
+func shouldUseIncrementalList(prev *DataSnapshot, diff *analysis.IssueDiff, r *recipe.Recipe, stats IssueDiffStats) bool {
+	if prev == nil || diff == nil || len(prev.ListItems) == 0 {
+		return false
+	}
+
+	currentRecipeName := ""
+	currentRecipeHash := ""
+	if r != nil {
+		currentRecipeName = r.Name
+		currentRecipeHash = recipeFingerprint(r)
+	}
+
+	if prev.RecipeName != currentRecipeName || prev.RecipeHash != currentRecipeHash {
+		return false
+	}
+	if stats.Total == 0 {
+		return false
+	}
+	return stats.Ratio <= incrementalListMaxChangeRatio
+}
+
+func buildListItems(issues []model.Issue, stats *analysis.GraphStats) []IssueItem {
+	listItems := make([]IssueItem, len(issues))
+	for i := range issues {
+		listItems[i] = buildIssueItemForSnapshot(issues[i], stats)
+	}
+	return listItems
+}
+
+func buildListItemsIncremental(issues []model.Issue, stats *analysis.GraphStats, prevItems []IssueItem, diff *analysis.IssueDiff) []IssueItem {
+	if len(prevItems) == 0 || diff == nil {
+		return buildListItems(issues, stats)
+	}
+	prevByID := make(map[string]IssueItem, len(prevItems))
+	for _, item := range prevItems {
+		prevByID[item.Issue.ID] = item
+	}
+	changed := make(map[string]struct{}, len(diff.Added)+len(diff.Modified))
+	for _, id := range diff.Added {
+		changed[id] = struct{}{}
+	}
+	for _, id := range diff.Modified {
+		changed[id] = struct{}{}
+	}
+
+	listItems := make([]IssueItem, len(issues))
+	for i := range issues {
+		issue := issues[i]
+		item, ok := prevByID[issue.ID]
+		if !ok || isChangedID(changed, issue.ID) {
+			item = IssueItem{}
+		}
+		resetIssueItemForSnapshot(&item, issue, stats)
+		listItems[i] = item
+	}
+	return listItems
+}
+
+func buildIssueItemForSnapshot(issue model.Issue, stats *analysis.GraphStats) IssueItem {
+	item := IssueItem{}
+	resetIssueItemForSnapshot(&item, issue, stats)
+	return item
+}
+
+func resetIssueItemForSnapshot(item *IssueItem, issue model.Issue, stats *analysis.GraphStats) {
+	item.Issue = issue
+	if stats != nil {
+		item.GraphScore = stats.GetPageRankScore(issue.ID)
+		item.Impact = stats.GetCriticalPathScore(issue.ID)
+	} else {
+		item.GraphScore = 0
+		item.Impact = 0
+	}
+	item.RepoPrefix = ExtractRepoPrefix(issue.ID)
+	item.DiffStatus = DiffStatusNone
+
+	item.SearchScore = 0
+	item.SearchTextScore = 0
+	item.SearchComponents = nil
+	item.SearchScoreSet = false
+
+	item.TriageScore = 0
+	item.TriageReason = ""
+	item.TriageReasons = nil
+	item.IsQuickWin = false
+	item.IsBlocker = false
+	item.UnblocksCount = 0
+}
+
+func isChangedID(changed map[string]struct{}, id string) bool {
+	_, ok := changed[id]
+	return ok
 }
 
 func issueMatchesRecipe(issue model.Issue, issueMap map[string]*model.Issue, r *recipe.Recipe) bool {
@@ -334,7 +640,7 @@ func issueMatchesRecipe(issue model.Issue, issueMap map[string]*model.Issue, r *
 	if len(r.Filters.Status) > 0 {
 		statusMatch := false
 		for _, s := range r.Filters.Status {
-			if string(issue.Status) == s {
+			if matchesRecipeStatus(issue.Status, s) {
 				statusMatch = true
 				break
 			}
@@ -377,10 +683,10 @@ func issueMatchesRecipe(issue model.Issue, issueMap map[string]*model.Issue, r *
 	// Actionable filter (true = no open blockers)
 	if r.Filters.Actionable != nil && *r.Filters.Actionable {
 		for _, dep := range issue.Dependencies {
-			if dep == nil || dep.Type != model.DepBlocks {
+			if dep == nil || !dep.Type.IsBlocking() {
 				continue
 			}
-			if blocker, exists := issueMap[dep.DependsOnID]; exists && blocker.Status != model.StatusClosed {
+			if blocker, exists := issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
 				return false
 			}
 		}

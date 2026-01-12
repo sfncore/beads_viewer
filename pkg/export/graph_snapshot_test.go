@@ -327,6 +327,7 @@ func TestStatusColor(t *testing.T) {
 		model.StatusBlocked,
 		model.StatusInProgress,
 		model.StatusClosed,
+		model.StatusTombstone,
 	}
 
 	for _, s := range statuses {

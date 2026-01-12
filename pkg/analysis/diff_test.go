@@ -110,6 +110,26 @@ func TestCompareSnapshots_ClosedIssues(t *testing.T) {
 	}
 }
 
+func TestCompareSnapshots_TombstoneCountsAsClosed(t *testing.T) {
+	fromIssues := []model.Issue{
+		{ID: "ISSUE-1", Title: "First", Status: model.StatusOpen},
+	}
+	toIssues := []model.Issue{
+		{ID: "ISSUE-1", Title: "First", Status: model.StatusTombstone},
+	}
+
+	from := NewSnapshot(fromIssues)
+	to := NewSnapshot(toIssues)
+	diff := CompareSnapshots(from, to)
+
+	if len(diff.ClosedIssues) != 1 {
+		t.Fatalf("expected 1 closed issue (tombstone), got %d", len(diff.ClosedIssues))
+	}
+	if diff.Summary.IssuesClosed != 1 {
+		t.Errorf("expected IssuesClosed 1, got %d", diff.Summary.IssuesClosed)
+	}
+}
+
 func TestCompareSnapshots_ReopenedIssues(t *testing.T) {
 	fromIssues := []model.Issue{
 		{ID: "ISSUE-1", Title: "First", Status: model.StatusClosed},

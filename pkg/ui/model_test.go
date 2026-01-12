@@ -25,28 +25,47 @@ func TestModelFiltering(t *testing.T) {
 				{DependsOnID: "3", Type: model.DepBlocks},
 			},
 		},
+		{ID: "6", Title: "Tombstone Issue", Status: model.StatusTombstone, Priority: 1},
+		{
+			ID: "7", Title: "Blocked by Tombstone", Status: model.StatusOpen, Priority: 1,
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "6", Type: model.DepBlocks},
+			},
+		},
+		{
+			ID: "8", Title: "Blocked by Open (legacy)", Status: model.StatusOpen, Priority: 1,
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "3", Type: ""},
+			},
+		},
 	}
 
 	m := ui.NewModel(issues, nil, "")
 
 	// Test "All"
-	if len(m.FilteredIssues()) != 5 {
-		t.Errorf("Expected 5 issues for 'all', got %d", len(m.FilteredIssues()))
+	if len(m.FilteredIssues()) != 8 {
+		t.Errorf("Expected 8 issues for 'all', got %d", len(m.FilteredIssues()))
 	}
 
 	// Test "Open" (includes Open, InProgress, Blocked)
 	m.SetFilter("open")
-	if len(m.FilteredIssues()) != 4 {
-		t.Errorf("Expected 4 issues for 'open', got %d", len(m.FilteredIssues()))
+	if len(m.FilteredIssues()) != 6 {
+		t.Errorf("Expected 6 issues for 'open', got %d", len(m.FilteredIssues()))
 	}
 
 	// Test "Closed"
 	m.SetFilter("closed")
-	if len(m.FilteredIssues()) != 1 {
-		t.Errorf("Expected 1 issue for 'closed', got %d", len(m.FilteredIssues()))
-	}
-	if m.FilteredIssues()[0].ID != "2" {
-		t.Errorf("Expected issue ID 2, got %s", m.FilteredIssues()[0].ID)
+	closedIssues := m.FilteredIssues()
+	if len(closedIssues) != 2 {
+		t.Errorf("Expected 2 issues for 'closed', got %d", len(closedIssues))
+	} else {
+		got := map[string]bool{
+			closedIssues[0].ID: true,
+			closedIssues[1].ID: true,
+		}
+		if !got["2"] || !got["6"] {
+			t.Errorf("Expected closed issues to include IDs 2 and 6, got %#v", got)
+		}
 	}
 
 	// Test "Ready"
@@ -54,12 +73,23 @@ func TestModelFiltering(t *testing.T) {
 	// ID 1 (Open), ID 4 (Ready).
 	// ID 3 is Blocked status.
 	// ID 5 is Open but Blocked by ID 3 (which is not closed).
-	// So we expect 1 and 4.
+	// ID 7 is Open but Blocked by tombstone ID 6 (treated as closed-like).
+	// ID 8 is Open but Blocked by ID 3 via legacy dependency type.
+	// So we expect 1, 4, and 7.
 	readyIssues := m.FilteredIssues()
-	if len(readyIssues) != 2 {
-		t.Errorf("Expected 2 issues for 'ready', got %d", len(readyIssues))
+	if len(readyIssues) != 3 {
+		t.Errorf("Expected 3 issues for 'ready', got %d", len(readyIssues))
 		for _, i := range readyIssues {
 			t.Logf("Got issue: %s", i.Title)
+		}
+	} else {
+		got := map[string]bool{
+			readyIssues[0].ID: true,
+			readyIssues[1].ID: true,
+			readyIssues[2].ID: true,
+		}
+		if !got["1"] || !got["4"] || !got["7"] {
+			t.Errorf("Expected ready issues to include IDs 1, 4, and 7, got %#v", got)
 		}
 	}
 }

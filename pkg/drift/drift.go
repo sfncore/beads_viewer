@@ -399,7 +399,7 @@ func (c *Calculator) checkStaleness(result *Result) {
 	}
 	now := time.Now().UTC()
 	for _, issue := range c.issues {
-		if issue.Status == model.StatusClosed {
+		if issue.Status == model.StatusClosed || issue.Status == model.StatusTombstone {
 			continue
 		}
 

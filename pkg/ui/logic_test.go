@@ -14,6 +14,7 @@ func TestApplyRecipe_StatusFilter(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "open", Status: model.StatusOpen},
 		{ID: "closed", Status: model.StatusClosed},
+		{ID: "tombstone", Status: model.StatusTombstone},
 		{ID: "blocked", Status: model.StatusBlocked},
 	}
 	m := NewModel(issues, nil, "")
@@ -28,11 +29,15 @@ func TestApplyRecipe_StatusFilter(t *testing.T) {
 	m.applyRecipe(r)
 
 	filtered := m.FilteredIssues()
-	if len(filtered) != 1 {
-		t.Fatalf("Expected 1 filtered issue, got %d", len(filtered))
+	if len(filtered) != 2 {
+		t.Fatalf("Expected 2 filtered issues, got %d", len(filtered))
 	}
-	if filtered[0].ID != "closed" {
-		t.Errorf("Expected issue 'closed', got %s", filtered[0].ID)
+	got := map[string]bool{}
+	for _, iss := range filtered {
+		got[iss.ID] = true
+	}
+	if !got["closed"] || !got["tombstone"] {
+		t.Errorf("Expected issues 'closed' and 'tombstone', got %+v", got)
 	}
 }
 

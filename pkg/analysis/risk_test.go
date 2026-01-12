@@ -116,6 +116,12 @@ func TestComputeRiskSignals_StatusRisk(t *testing.T) {
 			updatedAt:  now.Add(-21 * 24 * time.Hour),
 			expectHigh: true,
 		},
+		{
+			name:       "tombstone",
+			status:     model.StatusTombstone,
+			updatedAt:  now.Add(-30 * 24 * time.Hour),
+			expectHigh: false,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -143,6 +149,28 @@ func TestComputeRiskSignals_StatusRisk(t *testing.T) {
 				t.Errorf("expected low status risk for %s, got %f", tc.name, signals.StatusRisk)
 			}
 		})
+	}
+}
+
+func TestComputeAllRiskSignals_SkipsTombstone(t *testing.T) {
+	now := time.Now()
+
+	issues := map[string]model.Issue{
+		"open-1":      {ID: "open-1", Status: model.StatusOpen, CreatedAt: now.Add(-10 * 24 * time.Hour)},
+		"tombstone-1": {ID: "tombstone-1", Status: model.StatusTombstone, CreatedAt: now.Add(-20 * 24 * time.Hour)},
+	}
+
+	stats := &GraphStats{
+		InDegree:  make(map[string]int),
+		OutDegree: make(map[string]int),
+	}
+
+	signals := ComputeAllRiskSignals(issues, stats, now)
+	if _, ok := signals["tombstone-1"]; ok {
+		t.Fatal("expected tombstone issue to be skipped in risk signals")
+	}
+	if _, ok := signals["open-1"]; !ok {
+		t.Fatal("expected open issue to be included in risk signals")
 	}
 }
 

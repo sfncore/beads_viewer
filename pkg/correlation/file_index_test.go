@@ -212,6 +212,131 @@ func TestFileLookupByFile(t *testing.T) {
 	}
 }
 
+func TestFileLookupByFile_ExcludesTombstone(t *testing.T) {
+	now := time.Now()
+	report := &HistoryReport{
+		Histories: map[string]BeadHistory{
+			"bv-open": {
+				BeadID: "bv-open",
+				Title:  "Open Bead",
+				Status: "open",
+				Commits: []CorrelatedCommit{
+					{
+						SHA:       "open123",
+						ShortSHA:  "open123",
+						Timestamp: now,
+						Files: []FileChange{
+							{Path: "pkg/auth/token.go", Insertions: 1, Deletions: 0},
+						},
+					},
+				},
+			},
+			"bv-closed": {
+				BeadID: "bv-closed",
+				Title:  "Closed Bead",
+				Status: "closed",
+				Commits: []CorrelatedCommit{
+					{
+						SHA:       "closed123",
+						ShortSHA:  "closed123",
+						Timestamp: now,
+						Files: []FileChange{
+							{Path: "pkg/auth/token.go", Insertions: 2, Deletions: 1},
+						},
+					},
+				},
+			},
+			"bv-tomb": {
+				BeadID: "bv-tomb",
+				Title:  "Tombstone Bead",
+				Status: "tombstone",
+				Commits: []CorrelatedCommit{
+					{
+						SHA:       "tomb123",
+						ShortSHA:  "tomb123",
+						Timestamp: now,
+						Files: []FileChange{
+							{Path: "pkg/auth/token.go", Insertions: 3, Deletions: 2},
+						},
+					},
+				},
+			},
+		},
+		CommitIndex: CommitIndex{
+			"open123":   {"bv-open"},
+			"closed123": {"bv-closed"},
+			"tomb123":   {"bv-tomb"},
+		},
+	}
+
+	lookup := NewFileLookup(report)
+
+	result := lookup.LookupByFile("pkg/auth/token.go")
+	if result.TotalBeads != 2 {
+		t.Fatalf("Expected 2 total beads (tombstone excluded), got %d", result.TotalBeads)
+	}
+	if len(result.OpenBeads) != 1 || result.OpenBeads[0].BeadID != "bv-open" {
+		t.Fatalf("Expected open beads [bv-open], got %+v", result.OpenBeads)
+	}
+	if len(result.ClosedBeads) != 1 || result.ClosedBeads[0].BeadID != "bv-closed" {
+		t.Fatalf("Expected closed beads [bv-closed], got %+v", result.ClosedBeads)
+	}
+}
+
+func TestFileLookupByFileGlob_ExcludesTombstone(t *testing.T) {
+	now := time.Now()
+	report := &HistoryReport{
+		Histories: map[string]BeadHistory{
+			"bv-open": {
+				BeadID: "bv-open",
+				Title:  "Open Bead",
+				Status: "open",
+				Commits: []CorrelatedCommit{
+					{
+						SHA:       "open123",
+						ShortSHA:  "open123",
+						Timestamp: now,
+						Files: []FileChange{
+							{Path: "pkg/auth/token.go", Insertions: 1, Deletions: 0},
+						},
+					},
+				},
+			},
+			"bv-tomb": {
+				BeadID: "bv-tomb",
+				Title:  "Tombstone Bead",
+				Status: "tombstone",
+				Commits: []CorrelatedCommit{
+					{
+						SHA:       "tomb123",
+						ShortSHA:  "tomb123",
+						Timestamp: now,
+						Files: []FileChange{
+							{Path: "pkg/auth/token.go", Insertions: 3, Deletions: 2},
+						},
+					},
+				},
+			},
+		},
+		CommitIndex: CommitIndex{
+			"open123": {"bv-open"},
+			"tomb123": {"bv-tomb"},
+		},
+	}
+
+	lookup := NewFileLookup(report)
+	result := lookup.LookupByFileGlob("pkg/auth/*.go")
+	if result.TotalBeads != 1 {
+		t.Fatalf("Expected 1 total bead (tombstone excluded), got %d", result.TotalBeads)
+	}
+	if len(result.OpenBeads) != 1 || result.OpenBeads[0].BeadID != "bv-open" {
+		t.Fatalf("Expected open beads [bv-open], got %+v", result.OpenBeads)
+	}
+	if len(result.ClosedBeads) != 0 {
+		t.Fatalf("Expected no closed beads, got %+v", result.ClosedBeads)
+	}
+}
+
 func TestFileLookupByDirectory(t *testing.T) {
 	now := time.Now()
 	report := &HistoryReport{
@@ -266,6 +391,82 @@ func TestFileLookupByDirectory(t *testing.T) {
 	}
 }
 
+func TestFileLookupByDirectory_SortsByLastTouch(t *testing.T) {
+	now := time.Now()
+	older := now.Add(-1 * time.Hour)
+
+	report := &HistoryReport{
+		Histories: map[string]BeadHistory{
+			"bv-new": {
+				BeadID: "bv-new",
+				Title:  "Newest",
+				Status: "open",
+				Commits: []CorrelatedCommit{
+					{
+						SHA:       "new123",
+						ShortSHA:  "new123",
+						Timestamp: now,
+						Files: []FileChange{
+							{Path: "pkg/auth/new.go"},
+						},
+					},
+				},
+			},
+			"bv-a": {
+				BeadID: "bv-a",
+				Title:  "Older A",
+				Status: "open",
+				Commits: []CorrelatedCommit{
+					{
+						SHA:       "a123",
+						ShortSHA:  "a123",
+						Timestamp: older,
+						Files: []FileChange{
+							{Path: "pkg/auth/a.go"},
+						},
+					},
+				},
+			},
+			"bv-b": {
+				BeadID: "bv-b",
+				Title:  "Older B",
+				Status: "open",
+				Commits: []CorrelatedCommit{
+					{
+						SHA:       "b123",
+						ShortSHA:  "b123",
+						Timestamp: older,
+						Files: []FileChange{
+							{Path: "pkg/auth/b.go"},
+						},
+					},
+				},
+			},
+		},
+		CommitIndex: CommitIndex{
+			"new123": {"bv-new"},
+			"a123":   {"bv-a"},
+			"b123":   {"bv-b"},
+		},
+	}
+
+	lookup := NewFileLookup(report)
+
+	result := lookup.LookupByFile("pkg/auth")
+	if len(result.OpenBeads) != 3 {
+		t.Fatalf("Expected 3 open beads, got %d", len(result.OpenBeads))
+	}
+
+	// Sorted by LastTouch desc, then BeadID asc for ties.
+	if result.OpenBeads[0].BeadID != "bv-new" {
+		t.Fatalf("Expected first bead bv-new, got %s", result.OpenBeads[0].BeadID)
+	}
+	if result.OpenBeads[1].BeadID != "bv-a" || result.OpenBeads[2].BeadID != "bv-b" {
+		t.Fatalf("Expected tie-break order bv-a then bv-b, got %s, %s",
+			result.OpenBeads[1].BeadID, result.OpenBeads[2].BeadID)
+	}
+}
+
 func TestFileLookupByGlob(t *testing.T) {
 	now := time.Now()
 	report := &HistoryReport{
@@ -298,6 +499,61 @@ func TestFileLookupByGlob(t *testing.T) {
 	result := lookup.LookupByFileGlob("pkg/auth/*.go")
 	if result.TotalBeads != 1 {
 		t.Errorf("Expected 1 bead for glob pattern, got %d", result.TotalBeads)
+	}
+}
+
+func TestFileLookupByGlob_SortsByLastTouch(t *testing.T) {
+	now := time.Now()
+	older := now.Add(-2 * time.Hour)
+
+	report := &HistoryReport{
+		Histories: map[string]BeadHistory{
+			"bv-new": {
+				BeadID: "bv-new",
+				Title:  "Newest",
+				Status: "open",
+				Commits: []CorrelatedCommit{
+					{
+						SHA:       "new123",
+						ShortSHA:  "new123",
+						Timestamp: now,
+						Files: []FileChange{
+							{Path: "pkg/auth/new.go"},
+						},
+					},
+				},
+			},
+			"bv-old": {
+				BeadID: "bv-old",
+				Title:  "Older",
+				Status: "open",
+				Commits: []CorrelatedCommit{
+					{
+						SHA:       "old123",
+						ShortSHA:  "old123",
+						Timestamp: older,
+						Files: []FileChange{
+							{Path: "pkg/auth/old.go"},
+						},
+					},
+				},
+			},
+		},
+		CommitIndex: CommitIndex{
+			"new123": {"bv-new"},
+			"old123": {"bv-old"},
+		},
+	}
+
+	lookup := NewFileLookup(report)
+
+	result := lookup.LookupByFileGlob("pkg/auth/*.go")
+	if len(result.OpenBeads) != 2 {
+		t.Fatalf("Expected 2 open beads, got %d", len(result.OpenBeads))
+	}
+	if result.OpenBeads[0].BeadID != "bv-new" || result.OpenBeads[1].BeadID != "bv-old" {
+		t.Fatalf("Expected order bv-new then bv-old, got %s then %s",
+			result.OpenBeads[0].BeadID, result.OpenBeads[1].BeadID)
 	}
 }
 

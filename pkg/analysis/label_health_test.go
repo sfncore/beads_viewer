@@ -382,6 +382,25 @@ func TestExtractLabelsBasic(t *testing.T) {
 	}
 }
 
+func TestExtractLabels_TombstoneCounts(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "bv-1", Labels: []string{"api"}, Status: model.StatusOpen},
+		{ID: "bv-2", Labels: []string{"api"}, Status: model.StatusTombstone},
+	}
+
+	result := ExtractLabels(issues)
+	apiStats := result.Stats["api"]
+	if apiStats == nil {
+		t.Fatal("api label stats missing")
+	}
+	if apiStats.OpenCount != 1 {
+		t.Errorf("api: expected 1 open, got %d", apiStats.OpenCount)
+	}
+	if apiStats.ClosedCount != 1 {
+		t.Errorf("api: expected 1 closed (tombstone), got %d", apiStats.ClosedCount)
+	}
+}
+
 func TestExtractLabelsDuplicateLabelsOnIssue(t *testing.T) {
 	// Edge case: same label appears twice on an issue (shouldn't happen, but handle gracefully)
 	issues := []model.Issue{
@@ -677,6 +696,53 @@ func TestComputeVelocityMetricsAvgDaysToClose(t *testing.T) {
 	expectedAvg := 7.5
 	if v.AvgDaysToClose < expectedAvg-0.1 || v.AvgDaysToClose > expectedAvg+0.1 {
 		t.Errorf("Expected avg days to close ~%.1f, got %.1f", expectedAvg, v.AvgDaysToClose)
+	}
+}
+
+func TestComputeVelocityMetrics_IgnoresNonClosedWithClosedAt(t *testing.T) {
+	now := time.Date(2025, 12, 20, 12, 0, 0, 0, time.UTC)
+	closedAt := now.Add(-2 * 24 * time.Hour)
+	createdAt := now.Add(-6 * 24 * time.Hour)
+
+	issues := []model.Issue{
+		{ID: "open-closedat", CreatedAt: createdAt, ClosedAt: &closedAt, Status: model.StatusOpen},
+		{ID: "closed", CreatedAt: createdAt, ClosedAt: &closedAt, Status: model.StatusClosed},
+	}
+
+	v := ComputeVelocityMetrics(issues, now)
+
+	if v.ClosedLast7Days != 1 {
+		t.Fatalf("ClosedLast7Days: expected 1, got %d", v.ClosedLast7Days)
+	}
+	if v.ClosedLast30Days != 1 {
+		t.Fatalf("ClosedLast30Days: expected 1, got %d", v.ClosedLast30Days)
+	}
+
+	expectedAvg := closedAt.Sub(createdAt).Hours() / 24.0
+	const eps = 1e-9
+	if diff := v.AvgDaysToClose - expectedAvg; diff < -eps || diff > eps {
+		t.Fatalf("AvgDaysToClose: expected %.2f, got %.2f", expectedAvg, v.AvgDaysToClose)
+	}
+}
+
+func TestComputeHistoricalVelocity_IgnoresNonClosedWithClosedAt(t *testing.T) {
+	now := time.Date(2025, 12, 15, 12, 0, 0, 0, time.UTC) // Monday
+	closedAt := now.Add(2 * time.Hour)
+
+	issues := []model.Issue{
+		{ID: "open-closedat", ClosedAt: &closedAt, Status: model.StatusOpen, Labels: []string{"api"}},
+		{ID: "closed", ClosedAt: &closedAt, Status: model.StatusClosed, Labels: []string{"api"}},
+	}
+
+	h := ComputeHistoricalVelocity(issues, "api", 1, now)
+	if len(h.WeeklyVelocity) != 1 {
+		t.Fatalf("expected 1 weekly snapshot, got %d", len(h.WeeklyVelocity))
+	}
+	if h.WeeklyVelocity[0].Closed != 1 {
+		t.Fatalf("expected 1 closed in current week, got %d", h.WeeklyVelocity[0].Closed)
+	}
+	if len(h.WeeklyVelocity[0].IssueIDs) != 1 || h.WeeklyVelocity[0].IssueIDs[0] != "closed" {
+		t.Fatalf("expected IssueIDs [closed], got %v", h.WeeklyVelocity[0].IssueIDs)
 	}
 }
 
@@ -1650,18 +1716,18 @@ func TestComputeLabelAttentionScoresBlockImpact(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "bv-1", Labels: []string{"blocker"}, Status: model.StatusOpen, UpdatedAt: now},
 		{
-			ID:     "bv-2",
-			Labels: []string{"blocked"},
-			Status: model.StatusOpen,
+			ID:        "bv-2",
+			Labels:    []string{"blocked"},
+			Status:    model.StatusOpen,
 			UpdatedAt: now,
 			Dependencies: []*model.Dependency{
 				{DependsOnID: "bv-1", Type: model.DepBlocks},
 			},
 		},
 		{
-			ID:     "bv-3",
-			Labels: []string{"blocked"},
-			Status: model.StatusOpen,
+			ID:        "bv-3",
+			Labels:    []string{"blocked"},
+			Status:    model.StatusOpen,
 			UpdatedAt: now,
 			Dependencies: []*model.Dependency{
 				{DependsOnID: "bv-1", Type: model.DepBlocks},
@@ -2227,28 +2293,28 @@ func TestComputeHistoricalVelocity_EmptyLabel(t *testing.T) {
 
 func TestHistoricalVelocity_GetVelocityTrend(t *testing.T) {
 	tests := []struct {
-		name         string
-		weeklyData   []int // From most recent to oldest
+		name          string
+		weeklyData    []int // From most recent to oldest
 		expectedTrend string
 	}{
 		{
-			name:         "accelerating",
-			weeklyData:   []int{5, 4, 4, 3, 2, 2, 1, 1},
+			name:          "accelerating",
+			weeklyData:    []int{5, 4, 4, 3, 2, 2, 1, 1},
 			expectedTrend: "accelerating",
 		},
 		{
-			name:         "decelerating",
-			weeklyData:   []int{1, 1, 2, 2, 4, 4, 5, 5},
+			name:          "decelerating",
+			weeklyData:    []int{1, 1, 2, 2, 4, 4, 5, 5},
 			expectedTrend: "decelerating",
 		},
 		{
-			name:         "stable",
-			weeklyData:   []int{3, 3, 3, 3, 3, 3, 3, 3},
+			name:          "stable",
+			weeklyData:    []int{3, 3, 3, 3, 3, 3, 3, 3},
 			expectedTrend: "stable",
 		},
 		{
-			name:         "insufficient_data",
-			weeklyData:   []int{3, 3},
+			name:          "insufficient_data",
+			weeklyData:    []int{3, 3},
 			expectedTrend: "insufficient_data",
 		},
 	}

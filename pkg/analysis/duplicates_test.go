@@ -254,6 +254,20 @@ func TestDetectDuplicates_IgnoreClosedVsOpen(t *testing.T) {
 	}
 }
 
+func TestDetectDuplicates_SkipsTombstone(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "A", Title: "Implement user authentication system", Status: model.StatusOpen},
+		{ID: "B", Title: "Implement user authentication system", Status: model.StatusTombstone},
+	}
+
+	config := DefaultDuplicateConfig()
+	suggestions := DetectDuplicates(issues, config)
+
+	if len(suggestions) > 0 {
+		t.Error("DetectDuplicates() should skip tombstone issues")
+	}
+}
+
 // ============================================================================
 // DetectDuplicates Tests - Configuration
 // ============================================================================

@@ -207,6 +207,32 @@ func TestDetectMissingDependencies_ClosedIssuesSkipped(t *testing.T) {
 	}
 }
 
+func TestDetectMissingDependencies_TombstoneSkipped(t *testing.T) {
+	config := DefaultDependencySuggestionConfig()
+	config.MinKeywordOverlap = 1
+	config.MinConfidence = 0.1
+
+	issues := []model.Issue{
+		{
+			ID:          "i1",
+			Title:       "Auth implementation",
+			Description: "Build auth system",
+			Status:      model.StatusTombstone,
+		},
+		{
+			ID:          "i2",
+			Title:       "Auth tests",
+			Description: "Test auth system",
+			Status:      model.StatusOpen,
+		},
+	}
+
+	suggestions := DetectMissingDependencies(issues, config)
+	if len(suggestions) != 0 {
+		t.Errorf("expected 0 suggestions for tombstone issues, got %d", len(suggestions))
+	}
+}
+
 func TestDetectMissingDependencies_LabelOverlap(t *testing.T) {
 	config := DefaultDependencySuggestionConfig()
 	config.MinKeywordOverlap = 2

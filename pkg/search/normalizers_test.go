@@ -12,6 +12,7 @@ func TestNormalizeStatus(t *testing.T) {
 		"in_progress": 0.8,
 		"blocked":     0.5,
 		"closed":      0.1,
+		"tombstone":   0.0,
 		"unknown":     0.5,
 	}
 	for status, expected := range cases {
@@ -66,5 +67,10 @@ func TestNormalizeRecency(t *testing.T) {
 	expected := math.Exp(-1)
 	if got := normalizeRecency(thirtyDaysAgo); math.Abs(got-expected) > 1e-6 {
 		t.Fatalf("expected recency %f for 30 days ago, got %f", expected, got)
+	}
+
+	future := now.Add(24 * time.Hour)
+	if got := normalizeRecency(future); math.Abs(got-1.0) > 1e-6 {
+		t.Fatalf("expected recency 1.0 for future time, got %f", got)
 	}
 }

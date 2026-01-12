@@ -137,8 +137,8 @@ func (a *Analyzer) ComputeImpactScoresFromStats(stats *GraphStats, now time.Time
 	var scores []ImpactScore
 
 	for id, issue := range a.issueMap {
-		// Skip closed issues
-		if issue.Status == model.StatusClosed {
+		// Skip closed/tombstone issues
+		if isClosedLikeStatus(issue.Status) {
 			continue
 		}
 
@@ -781,7 +781,6 @@ const MaxUnblockedIDsShown = 10
 // computeWhatIfDelta calculates the impact of completing an issue (bv-83)
 func (a *Analyzer) computeWhatIfDelta(issueID string) *WhatIfDelta {
 	stats := a.Analyze()
-	criticalPath := stats.CriticalPathScore()
 
 	// Get direct unblocks using existing method
 	directUnblocks := a.computeUnblocks(issueID)
@@ -800,9 +799,9 @@ func (a *Analyzer) computeWhatIfDelta(issueID string) *WhatIfDelta {
 		}
 	}
 
-	// Compute depth reduction based on critical path
+	// Compute depth reduction based on critical path (O(1) lookup via bv-77ec)
 	depthReduction := 0.0
-	currentDepth := criticalPath[issueID]
+	currentDepth, _ := stats.CriticalPathValue(issueID)
 	if currentDepth > 0 {
 		// Estimate depth reduction as a fraction of current depth
 		depthReduction = currentDepth / MaxCriticalPathDepth
@@ -868,7 +867,7 @@ func (a *Analyzer) countTransitiveUnblocks(issueID string) int {
 			if simulatedClosed[depID] {
 				continue
 			}
-			if issue, exists := a.issueMap[depID]; exists && issue.Status == model.StatusClosed {
+			if issue, exists := a.issueMap[depID]; exists && isClosedLikeStatus(issue.Status) {
 				continue
 			}
 
@@ -884,7 +883,7 @@ func (a *Analyzer) countTransitiveUnblocks(issueID string) int {
 				isClosed := false
 				if simulatedClosed[blockerID] {
 					isClosed = true
-				} else if bIssue, ok := a.issueMap[blockerID]; ok && bIssue.Status == model.StatusClosed {
+				} else if bIssue, ok := a.issueMap[blockerID]; ok && isClosedLikeStatus(bIssue.Status) {
 					isClosed = true
 				}
 

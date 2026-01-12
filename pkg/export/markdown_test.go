@@ -177,6 +177,64 @@ func TestCreateSlug(t *testing.T) {
 	}
 }
 
+func TestGenerateMarkdown_TOCAnchorsMatchHeadings(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "BV-1", Title: "Fix Parser", Status: model.StatusOpen, IssueType: model.TypeBug},
+	}
+
+	md, err := GenerateMarkdown(issues, "Report")
+	if err != nil {
+		t.Fatalf("GenerateMarkdown failed: %v", err)
+	}
+
+	headingText := issueHeadingText(issues[0])
+	slug := createSlug(headingText)
+	tocLine := fmt.Sprintf("- [%s %s %s](#%s)",
+		getStatusEmoji(string(issues[0].Status)), issues[0].ID, issues[0].Title, slug)
+
+	if !strings.Contains(md, tocLine) {
+		t.Errorf("TOC should include anchor matching heading: %q", tocLine)
+	}
+
+	anchorLine := fmt.Sprintf("<a id=\"%s\"></a>", slug)
+	if !strings.Contains(md, anchorLine) {
+		t.Errorf("markdown should include explicit anchor %q", anchorLine)
+	}
+
+	if !strings.Contains(md, fmt.Sprintf("## %s", headingText)) {
+		t.Errorf("markdown should include heading text %q", headingText)
+	}
+}
+
+func TestGenerateMarkdown_TOCAnchorsDisambiguateSlugCollisions(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "BV_1", Title: "Same Title", Status: model.StatusOpen, IssueType: model.TypeBug},
+		{ID: "BV-1", Title: "Same Title", Status: model.StatusOpen, IssueType: model.TypeBug},
+	}
+
+	md, err := GenerateMarkdown(issues, "Report")
+	if err != nil {
+		t.Fatalf("GenerateMarkdown failed: %v", err)
+	}
+
+	baseSlug := createSlug(issueHeadingText(issues[0]))
+	firstAnchor := fmt.Sprintf("<a id=\"%s\"></a>", baseSlug)
+	secondAnchor := fmt.Sprintf("<a id=\"%s-1\"></a>", baseSlug)
+
+	if !strings.Contains(md, firstAnchor) {
+		t.Errorf("markdown should include first anchor %q", firstAnchor)
+	}
+	if !strings.Contains(md, secondAnchor) {
+		t.Errorf("markdown should include disambiguated anchor %q", secondAnchor)
+	}
+	if !strings.Contains(md, fmt.Sprintf("](#%s)", baseSlug)) {
+		t.Errorf("TOC should include base slug %q", baseSlug)
+	}
+	if !strings.Contains(md, fmt.Sprintf("](#%s-1)", baseSlug)) {
+		t.Errorf("TOC should include disambiguated slug %q", baseSlug+"-1")
+	}
+}
+
 // ============================================================================
 // getStatusEmoji tests
 // ============================================================================
@@ -190,6 +248,7 @@ func TestGetStatusEmoji(t *testing.T) {
 		{"in_progress", "🔵"},
 		{"blocked", "🔴"},
 		{"closed", "⚫"},
+		{"tombstone", "⚫"},
 		{"unknown", "⚪"},
 		{"", "⚪"},
 	}
@@ -495,6 +554,7 @@ func TestGenerateMarkdown_AllStatuses(t *testing.T) {
 		{ID: "B", Title: "InProgress", Status: model.StatusInProgress, CreatedAt: now, UpdatedAt: now},
 		{ID: "C", Title: "Blocked", Status: model.StatusBlocked, CreatedAt: now, UpdatedAt: now},
 		{ID: "D", Title: "Closed", Status: model.StatusClosed, CreatedAt: now, UpdatedAt: now},
+		{ID: "E", Title: "Tombstone", Status: model.StatusTombstone, CreatedAt: now, UpdatedAt: now},
 	}
 
 	md, err := GenerateMarkdown(issues, "All Statuses")
@@ -512,7 +572,7 @@ func TestGenerateMarkdown_AllStatuses(t *testing.T) {
 	if !strings.Contains(md, "Blocked | 1") {
 		t.Error("Missing blocked count")
 	}
-	if !strings.Contains(md, "Closed | 1") {
+	if !strings.Contains(md, "Closed | 2") {
 		t.Error("Missing closed count")
 	}
 
@@ -528,6 +588,9 @@ func TestGenerateMarkdown_AllStatuses(t *testing.T) {
 	}
 	if !strings.Contains(md, "class D closed") {
 		t.Error("Missing closed class")
+	}
+	if !strings.Contains(md, "class E closed") {
+		t.Error("Missing tombstone class")
 	}
 }
 
@@ -1269,6 +1332,7 @@ func TestGenerateQuickActions_AllClosed(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "CLOSED-1", Status: model.StatusClosed, Priority: 2, CreatedAt: now, UpdatedAt: now},
 		{ID: "CLOSED-2", Status: model.StatusClosed, Priority: 2, CreatedAt: now, UpdatedAt: now},
+		{ID: "TOMB-1", Status: model.StatusTombstone, Priority: 1, CreatedAt: now, UpdatedAt: now},
 	}
 
 	result := generateQuickActions(issues)
@@ -1514,5 +1578,32 @@ func TestGenerateMarkdown_ClosedIssueNoCommands(t *testing.T) {
 
 	if strings.Contains(issueSection, "<details>") {
 		t.Error("Closed issue should not have command snippets")
+	}
+}
+
+func TestGenerateMarkdown_TombstoneIssueNoCommands(t *testing.T) {
+	now := time.Now()
+	issues := []model.Issue{
+		{ID: "TOMB-1", Title: "Removed Issue", Status: model.StatusTombstone, Priority: 2, CreatedAt: now, UpdatedAt: now},
+	}
+
+	md, err := GenerateMarkdown(issues, "Tombstone Commands Test")
+	if err != nil {
+		t.Fatalf("GenerateMarkdown returned error: %v", err)
+	}
+
+	issueHeaderIdx := strings.Index(md, "## • TOMB-1")
+	if issueHeaderIdx == -1 {
+		t.Fatal("Missing issue header")
+	}
+
+	issueSection := md[issueHeaderIdx:]
+	nextSeparator := strings.Index(issueSection, "\n---\n")
+	if nextSeparator != -1 {
+		issueSection = issueSection[:nextSeparator]
+	}
+
+	if strings.Contains(issueSection, "<details>") {
+		t.Error("Tombstone issue should not have command snippets")
 	}
 }

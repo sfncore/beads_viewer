@@ -261,19 +261,11 @@ func generateDOT(issues []model.Issue, issueIDs map[string]bool, stats *analysis
 
 	// Nodes
 	for _, i := range sortedIssues {
-		// Truncate title first to ensure we don't split escape sequences later
-		rawTitle := i.Title
-		if len(rawTitle) > 30 {
-			rawTitle = rawTitle[:27] + "..."
-		}
+		// Truncate title first (runes) to avoid splitting UTF-8 sequences
+		rawTitle := truncateRunes(i.Title, 30)
 
-		// Escape backslashes first, then quotes
-		title := strings.ReplaceAll(rawTitle, "\\", "\\\\")
-		title = strings.ReplaceAll(title, "\"", "\\\"")
-
-		// Escape quotes in ID for the label (IDs shouldn't have backslashes usually, but safe to escape)
-		escapedID := strings.ReplaceAll(i.ID, "\\", "\\\\")
-		escapedID = strings.ReplaceAll(escapedID, "\"", "\\\"")
+		title := escapeDOTString(rawTitle)
+		escapedID := escapeDOTString(i.ID)
 
 		// Status color
 		color := dotStatusColor(i.Status)
@@ -333,15 +325,15 @@ func generateDOT(issues []model.Issue, issueIDs map[string]bool, stats *analysis
 
 // dotStatusColor returns a DOT-compatible color for a status.
 func dotStatusColor(status model.Status) string {
-	switch status {
-	case model.StatusOpen:
-		return "#C8E6C9" // Light green
-	case model.StatusInProgress:
-		return "#BBDEFB" // Light blue
-	case model.StatusBlocked:
-		return "#FFCDD2" // Light red
-	case model.StatusClosed:
+	switch {
+	case isClosedLikeStatus(status):
 		return "#CFD8DC" // Light gray
+	case status == model.StatusOpen:
+		return "#C8E6C9" // Light green
+	case status == model.StatusInProgress:
+		return "#BBDEFB" // Light blue
+	case status == model.StatusBlocked:
+		return "#FFCDD2" // Light red
 	default:
 		return "#FFFFFF"
 	}
@@ -349,8 +341,32 @@ func dotStatusColor(status model.Status) string {
 
 // sanitizeDOTID ensures an ID is valid for DOT format.
 func sanitizeDOTID(id string) string {
-	// DOT IDs in quotes are quite flexible, just escape quotes
-	return strings.ReplaceAll(id, "\"", "\\\"")
+	return escapeDOTString(id)
+}
+
+func escapeDOTString(s string) string {
+	// DOT string literals need backslashes and quotes escaped; normalize newlines.
+	replacer := strings.NewReplacer(
+		"\\", "\\\\",
+		"\"", "\\\"",
+		"\n", " ",
+		"\r", " ",
+	)
+	return replacer.Replace(s)
+}
+
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	if max <= 3 {
+		return string(runes[:max])
+	}
+	return string(runes[:max-3]) + "..."
 }
 
 // generateMermaid creates a Mermaid diagram format graph.
@@ -412,17 +428,19 @@ func generateMermaid(issues []model.Issue, issueIDs map[string]bool) string {
 
 		// Apply class based on status
 		var class string
-		switch i.Status {
-		case model.StatusOpen:
-			class = "open"
-		case model.StatusInProgress:
-			class = "inprogress"
-		case model.StatusBlocked:
-			class = "blocked"
-		case model.StatusClosed:
+		switch {
+		case isClosedLikeStatus(i.Status):
 			class = "closed"
+		case i.Status == model.StatusOpen:
+			class = "open"
+		case i.Status == model.StatusInProgress:
+			class = "inprogress"
+		case i.Status == model.StatusBlocked:
+			class = "blocked"
 		}
-		sb.WriteString(fmt.Sprintf("    class %s %s\n", safeID, class))
+		if class != "" {
+			sb.WriteString(fmt.Sprintf("    class %s %s\n", safeID, class))
+		}
 	}
 
 	sb.WriteString("\n")

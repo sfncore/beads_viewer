@@ -173,18 +173,26 @@ func (fl *FileLookup) LookupByFile(path string) *FileBeadLookupResult {
 	if refs, ok := fl.index.FileToBeads[normalizedPath]; ok {
 		for _, ref := range refs {
 			// Get current status from beads map (may have changed)
+			status := ref.Status
 			if history, ok := fl.beads[ref.BeadID]; ok {
 				ref.Status = history.Status
 				ref.Title = history.Title
+				status = history.Status
 			}
 
-			if ref.Status == "closed" {
+			bucket, skip := classifyBeadStatus(status)
+			if skip {
+				continue
+			}
+			if bucket == "closed" {
 				result.ClosedBeads = append(result.ClosedBeads, ref)
 			} else {
 				result.OpenBeads = append(result.OpenBeads, ref)
 			}
 		}
-		result.TotalBeads = len(refs)
+		sortBeadRefs(result.OpenBeads)
+		sortBeadRefs(result.ClosedBeads)
+		result.TotalBeads = len(result.OpenBeads) + len(result.ClosedBeads)
 		return result
 	}
 
@@ -194,13 +202,20 @@ func (fl *FileLookup) LookupByFile(path string) *FileBeadLookupResult {
 		if strings.HasPrefix(filePath, normalizedPath+"/") {
 			for _, ref := range refs {
 				// Get current status
+				status := ref.Status
 				if history, ok := fl.beads[ref.BeadID]; ok {
 					ref.Status = history.Status
 					ref.Title = history.Title
+					status = history.Status
+				}
+
+				bucket, skip := classifyBeadStatus(status)
+				if skip {
+					continue
 				}
 
 				// Avoid duplicates across files in directory
-				if ref.Status == "closed" {
+				if bucket == "closed" {
 					if !containsBeadRef(result.ClosedBeads, ref.BeadID) {
 						result.ClosedBeads = append(result.ClosedBeads, ref)
 					}
@@ -213,6 +228,8 @@ func (fl *FileLookup) LookupByFile(path string) *FileBeadLookupResult {
 		}
 	}
 
+	sortBeadRefs(result.OpenBeads)
+	sortBeadRefs(result.ClosedBeads)
 	result.TotalBeads = len(result.OpenBeads) + len(result.ClosedBeads)
 	return result
 }
@@ -237,12 +254,18 @@ func (fl *FileLookup) LookupByFileGlob(pattern string) *FileBeadLookupResult {
 
 		for _, ref := range refs {
 			// Get current status
+			status := ref.Status
 			if history, ok := fl.beads[ref.BeadID]; ok {
 				ref.Status = history.Status
 				ref.Title = history.Title
+				status = history.Status
 			}
 
-			if ref.Status == "closed" {
+			bucket, skip := classifyBeadStatus(status)
+			if skip {
+				continue
+			}
+			if bucket == "closed" {
 				if !seenClosed[ref.BeadID] {
 					result.ClosedBeads = append(result.ClosedBeads, ref)
 					seenClosed[ref.BeadID] = true
@@ -256,6 +279,8 @@ func (fl *FileLookup) LookupByFileGlob(pattern string) *FileBeadLookupResult {
 		}
 	}
 
+	sortBeadRefs(result.OpenBeads)
+	sortBeadRefs(result.ClosedBeads)
 	result.TotalBeads = len(result.OpenBeads) + len(result.ClosedBeads)
 	return result
 }
@@ -723,6 +748,27 @@ func normalizePath(path string) string {
 	path = strings.TrimSuffix(path, "/")
 
 	return path
+}
+
+func classifyBeadStatus(status string) (bucket string, skip bool) {
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	switch normalized {
+	case "tombstone":
+		return "", true
+	case "closed":
+		return "closed", false
+	default:
+		return "open", false
+	}
+}
+
+func sortBeadRefs(refs []BeadReference) {
+	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].LastTouch.Equal(refs[j].LastTouch) {
+			return refs[i].BeadID < refs[j].BeadID
+		}
+		return refs[i].LastTouch.After(refs[j].LastTouch)
+	})
 }
 
 // containsBeadRef checks if a slice contains a bead reference with the given ID.

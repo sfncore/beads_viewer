@@ -287,15 +287,15 @@ var (
 )
 
 func statusColor(s model.Status) color.RGBA {
-	switch s {
-	case model.StatusOpen:
-		return colorOpen
-	case model.StatusBlocked:
-		return colorBlocked
-	case model.StatusInProgress:
-		return colorInProg
-	case model.StatusClosed:
+	switch {
+	case isClosedLikeStatus(s):
 		return colorClosed
+	case s == model.StatusOpen:
+		return colorOpen
+	case s == model.StatusBlocked:
+		return colorBlocked
+	case s == model.StatusInProgress:
+		return colorInProg
 	default:
 		return colorOpen
 	}

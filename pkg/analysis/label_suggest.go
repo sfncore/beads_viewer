@@ -94,10 +94,10 @@ var builtinLabelMappings = map[string][]string{
 
 // LabelMatch represents a potential label suggestion
 type LabelMatch struct {
-	IssueID      string  `json:"issue_id"`
-	Label        string  `json:"label"`
-	Confidence   float64 `json:"confidence"`
-	Reason       string  `json:"reason"`
+	IssueID      string   `json:"issue_id"`
+	Label        string   `json:"label"`
+	Confidence   float64  `json:"confidence"`
+	Reason       string   `json:"reason"`
 	MatchedWords []string `json:"matched_words,omitempty"`
 }
 
@@ -124,8 +124,8 @@ func SuggestLabels(issues []model.Issue, config LabelSuggestionConfig) []Suggest
 	var matches []LabelMatch
 
 	for _, issue := range issues {
-		// Skip closed issues
-		if issue.Status == model.StatusClosed {
+		// Skip closed/tombstone issues
+		if isClosedLikeStatus(issue.Status) {
 			continue
 		}
 
@@ -179,12 +179,28 @@ func SuggestLabels(issues []model.Issue, config LabelSuggestionConfig) []Suggest
 			}
 		}
 
-		// Convert scores to matches
-		issueMatches := 0
+		// Convert scores to matches, sorted by confidence for deterministic top picks.
+		type labelCandidate struct {
+			label string
+			score float64
+		}
+		candidates := make([]labelCandidate, 0, len(labelScores))
 		for label, score := range labelScores {
-			if score < config.MinConfidence {
+			candidates = append(candidates, labelCandidate{label: label, score: score})
+		}
+		sort.Slice(candidates, func(i, j int) bool {
+			if candidates[i].score == candidates[j].score {
+				return candidates[i].label < candidates[j].label
+			}
+			return candidates[i].score > candidates[j].score
+		})
+
+		issueMatches := 0
+		for _, candidate := range candidates {
+			if candidate.score < config.MinConfidence {
 				continue
 			}
+			score := candidate.score
 			if score > 0.95 {
 				score = 0.95
 			}
@@ -192,15 +208,17 @@ func SuggestLabels(issues []model.Issue, config LabelSuggestionConfig) []Suggest
 				break
 			}
 
-			reasons := labelReasons[label]
-			reason := fmt.Sprintf("keywords: %s", strings.Join(uniqueStrings(reasons), ", "))
+			reasons := labelReasons[candidate.label]
+			uniqueReasons := uniqueStrings(reasons)
+			sort.Strings(uniqueReasons)
+			reason := fmt.Sprintf("keywords: %s", strings.Join(uniqueReasons, ", "))
 
 			matches = append(matches, LabelMatch{
 				IssueID:      issue.ID,
-				Label:        label,
+				Label:        candidate.label,
 				Confidence:   score,
 				Reason:       reason,
-				MatchedWords: uniqueStrings(reasons),
+				MatchedWords: uniqueReasons,
 			})
 			issueMatches++
 		}

@@ -1,6 +1,7 @@
 package correlation
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -163,6 +164,146 @@ func TestFindRelatedWork_CommitOverlap(t *testing.T) {
 	}
 }
 
+func TestFindRelatedWork_FileOverlapOrdering(t *testing.T) {
+	now := time.Now()
+
+	report := &HistoryReport{
+		Histories: map[string]BeadHistory{
+			"bv-target": {
+				BeadID: "bv-target",
+				Title:  "Target Bead",
+				Status: "open",
+				Commits: []CorrelatedCommit{
+					{
+						SHA: "c1",
+						Files: []FileChange{
+							{Path: "z.go"},
+							{Path: "a.go"},
+						},
+						Timestamp: now,
+					},
+				},
+			},
+			"bv-both": {
+				BeadID: "bv-both",
+				Title:  "Shares Both",
+				Status: "open",
+				Commits: []CorrelatedCommit{
+					{
+						SHA: "c2",
+						Files: []FileChange{
+							{Path: "a.go"},
+							{Path: "z.go"},
+						},
+						Timestamp: now.Add(-1 * time.Hour),
+					},
+				},
+			},
+			"bv-aaa": {
+				BeadID: "bv-aaa",
+				Title:  "Shares A",
+				Status: "open",
+				Commits: []CorrelatedCommit{
+					{
+						SHA: "c3",
+						Files: []FileChange{
+							{Path: "a.go"},
+						},
+						Timestamp: now.Add(-2 * time.Hour),
+					},
+				},
+			},
+			"bv-bbb": {
+				BeadID: "bv-bbb",
+				Title:  "Shares Z",
+				Status: "open",
+				Commits: []CorrelatedCommit{
+					{
+						SHA: "c4",
+						Files: []FileChange{
+							{Path: "z.go"},
+						},
+						Timestamp: now.Add(-3 * time.Hour),
+					},
+				},
+			},
+		},
+		CommitIndex: make(CommitIndex),
+	}
+
+	opts := DefaultRelatedWorkOptions()
+	opts.MinRelevance = 0
+
+	result := report.FindRelatedWork("bv-target", opts)
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	if len(result.FileOverlap) < 3 {
+		t.Fatalf("Expected at least 3 file-overlap results, got %d", len(result.FileOverlap))
+	}
+
+	if result.FileOverlap[0].BeadID != "bv-both" {
+		t.Fatalf("Expected highest relevance first (bv-both), got %s", result.FileOverlap[0].BeadID)
+	}
+	if result.FileOverlap[1].BeadID != "bv-aaa" || result.FileOverlap[2].BeadID != "bv-bbb" {
+		t.Fatalf("Expected tie-break by bead ID (bv-aaa then bv-bbb), got %s, %s",
+			result.FileOverlap[1].BeadID, result.FileOverlap[2].BeadID)
+	}
+
+	wantShared := []string{"a.go", "z.go"}
+	if !reflect.DeepEqual(result.FileOverlap[0].SharedFiles, wantShared) {
+		t.Fatalf("Expected shared files sorted %v, got %v", wantShared, result.FileOverlap[0].SharedFiles)
+	}
+}
+
+func TestFindRelatedWork_CommitOverlapSharedCommitsSorted(t *testing.T) {
+	now := time.Now()
+
+	report := &HistoryReport{
+		Histories: map[string]BeadHistory{
+			"bv-target": {
+				BeadID: "bv-target",
+				Title:  "Target Bead",
+				Status: "open",
+				Commits: []CorrelatedCommit{
+					{SHA: "b0000001", Timestamp: now},
+					{SHA: "a0000002", Timestamp: now.Add(-1 * time.Hour)},
+				},
+			},
+			"bv-shared": {
+				BeadID: "bv-shared",
+				Title:  "Shared Bead",
+				Status: "open",
+				Commits: []CorrelatedCommit{
+					{SHA: "a0000002", Timestamp: now},
+					{SHA: "b0000001", Timestamp: now},
+				},
+			},
+		},
+		CommitIndex: CommitIndex{
+			"a0000002": {"bv-target", "bv-shared"},
+			"b0000001": {"bv-target", "bv-shared"},
+		},
+	}
+
+	opts := DefaultRelatedWorkOptions()
+	opts.MinRelevance = 0
+
+	result := report.FindRelatedWork("bv-target", opts)
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+	if len(result.CommitOverlap) == 0 {
+		t.Fatal("Expected commit overlap results")
+	}
+
+	wantCommits := []string{"a000000", "b000000"}
+	if !reflect.DeepEqual(result.CommitOverlap[0].SharedCommits, wantCommits) {
+		t.Fatalf("Expected shared commits sorted %v, got %v", wantCommits, result.CommitOverlap[0].SharedCommits)
+	}
+}
+
 func TestFindRelatedWork_DependencyCluster(t *testing.T) {
 	report := &HistoryReport{
 		Histories: map[string]BeadHistory{
@@ -191,9 +332,9 @@ func TestFindRelatedWork_DependencyCluster(t *testing.T) {
 	}
 
 	depGraph := map[string][]string{
-		"bv-target":            {"bv-direct-dep"},      // target depends on direct-dep
-		"bv-direct-dep":        {"bv-indirect-dep"},    // direct-dep depends on indirect-dep
-		"bv-depends-on-target": {"bv-target"},          // depends-on-target depends on target
+		"bv-target":            {"bv-direct-dep"},   // target depends on direct-dep
+		"bv-direct-dep":        {"bv-indirect-dep"}, // direct-dep depends on indirect-dep
+		"bv-depends-on-target": {"bv-target"},       // depends-on-target depends on target
 	}
 
 	opts := DefaultRelatedWorkOptions()
@@ -327,6 +468,14 @@ func TestFindRelatedWork_ExcludesClosed(t *testing.T) {
 					{SHA: "def456", Files: []FileChange{{Path: "shared.go"}}, Timestamp: now},
 				},
 			},
+			"bv-tombstone": {
+				BeadID: "bv-tombstone",
+				Title:  "Tombstone Bead",
+				Status: "tombstone",
+				Commits: []CorrelatedCommit{
+					{SHA: "ghi789", Files: []FileChange{{Path: "shared.go"}}, Timestamp: now},
+				},
+			},
 		},
 		CommitIndex: make(CommitIndex),
 	}
@@ -340,25 +489,30 @@ func TestFindRelatedWork_ExcludesClosed(t *testing.T) {
 		t.Fatal("Expected non-nil result")
 	}
 
+	beadsByID := make(map[string]RelatedWorkBead)
 	for _, rb := range result.FileOverlap {
-		if rb.BeadID == "bv-closed" {
-			t.Error("Closed bead should be excluded when IncludeClosed=false")
-		}
+		beadsByID[rb.BeadID] = rb
+	}
+	if _, ok := beadsByID["bv-closed"]; ok {
+		t.Error("Closed bead should be excluded when IncludeClosed=false")
+	}
+	if _, ok := beadsByID["bv-tombstone"]; ok {
+		t.Error("Tombstone bead should be excluded even when IncludeClosed=false")
 	}
 
 	// With IncludeClosed
 	opts.IncludeClosed = true
 	result = report.FindRelatedWork("bv-target", opts)
 
-	foundClosed := false
+	beadsByID = make(map[string]RelatedWorkBead)
 	for _, rb := range result.FileOverlap {
-		if rb.BeadID == "bv-closed" {
-			foundClosed = true
-		}
+		beadsByID[rb.BeadID] = rb
 	}
-
-	if !foundClosed {
+	if _, ok := beadsByID["bv-closed"]; !ok {
 		t.Error("Closed bead should be included when IncludeClosed=true")
+	}
+	if _, ok := beadsByID["bv-tombstone"]; ok {
+		t.Error("Tombstone bead should be excluded even when IncludeClosed=true")
 	}
 }
 

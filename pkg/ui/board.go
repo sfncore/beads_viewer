@@ -264,15 +264,15 @@ func groupIssuesByMode(issues []model.Issue, mode SwimLaneMode) [4][]model.Issue
 		switch mode {
 		case SwimByStatus:
 			// Default: Open | In Progress | Blocked | Closed
-			switch issue.Status {
-			case model.StatusOpen:
-				colIdx = 0
-			case model.StatusInProgress:
-				colIdx = 1
-			case model.StatusBlocked:
-				colIdx = 2
-			case model.StatusClosed:
+			switch {
+			case isClosedLikeStatus(issue.Status):
 				colIdx = 3
+			case issue.Status == model.StatusOpen:
+				colIdx = 0
+			case issue.Status == model.StatusInProgress:
+				colIdx = 1
+			case issue.Status == model.StatusBlocked:
+				colIdx = 2
 			default:
 				colIdx = 0
 			}

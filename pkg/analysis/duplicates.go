@@ -32,6 +32,10 @@ var stopWords = map[string]bool{
 	"very": true, "most": true, "make": true, "use": true,
 }
 
+func isClosedLikeDuplicateStatus(status model.Status) bool {
+	return status == model.StatusClosed || status == model.StatusTombstone
+}
+
 // DuplicateConfig configures duplicate detection behavior
 type DuplicateConfig struct {
 	// JaccardThreshold is the minimum similarity score (0.0-1.0)
@@ -136,9 +140,13 @@ func DetectDuplicates(issues []model.Issue, config DuplicateConfig) []Suggestion
 			issue1 := &issues[i]
 			issue2 := &issues[j]
 
+			if issue1.Status == model.StatusTombstone || issue2.Status == model.StatusTombstone {
+				continue
+			}
+
 			// Skip closed vs open pairs if configured
 			if config.IgnoreClosedVsOpen {
-				if (issue1.Status == model.StatusClosed) != (issue2.Status == model.StatusClosed) {
+				if isClosedLikeDuplicateStatus(issue1.Status) != isClosedLikeDuplicateStatus(issue2.Status) {
 					continue
 				}
 			}
@@ -185,7 +193,7 @@ func DetectDuplicates(issues []model.Issue, config DuplicateConfig) []Suggestion
 		).WithRelatedBead(pair.Issue2).WithMetadata("method", pair.Method)
 
 		// Add action command if both are open
-		if issue1.Status != model.StatusClosed && issue2.Status != model.StatusClosed {
+		if !isClosedLikeDuplicateStatus(issue1.Status) && !isClosedLikeDuplicateStatus(issue2.Status) {
 			sug = sug.WithAction(fmt.Sprintf("bd dep add %s %s --type=related", pair.Issue1, pair.Issue2))
 		}
 
@@ -247,8 +255,6 @@ func extractKeywords(title, description string) []string {
 
 	return keywords
 }
-
-
 
 // sortPairsBySimilarity sorts duplicate pairs by similarity (highest first)
 // Uses sort.Slice for O(n log n) performance instead of bubble sort O(n²)

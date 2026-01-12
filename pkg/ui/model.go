@@ -738,8 +738,8 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 	} else {
 		// Default Sort: Open first, then by Priority (ascending), then by date (newest first)
 		sort.Slice(issues, func(i, j int) bool {
-			iClosed := issues[i].Status == model.StatusClosed
-			jClosed := issues[j].Status == model.StatusClosed
+			iClosed := isClosedLikeStatus(issues[i].Status)
+			jClosed := isClosedLikeStatus(issues[j].Status)
 			if iClosed != jClosed {
 				return !iClosed // Open issues first
 			}
@@ -770,7 +770,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 	cOpen, cReady, cBlocked, cClosed := 0, 0, 0, 0
 	for i := range issues {
 		issue := &issues[i]
-		if issue.Status == model.StatusClosed {
+		if isClosedLikeStatus(issue.Status) {
 			cClosed++
 			continue
 		}
@@ -787,7 +787,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 			if dep == nil || !dep.Type.IsBlocking() {
 				continue
 			}
-			if blocker, exists := issueMap[dep.DependsOnID]; exists && blocker.Status != model.StatusClosed {
+			if blocker, exists := issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
 				isBlocked = true
 				break
 			}
@@ -997,6 +997,12 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		}
 	}
 
+	// Tree view state should persist alongside the beads directory (e.g. BEADS_DIR overrides).
+	treeModel := NewTreeModel(theme)
+	if beadsPath != "" {
+		treeModel.SetBeadsDir(filepath.Dir(beadsPath))
+	}
+
 	return Model{
 		issues:                 issues,
 		issueMap:               issueMap,
@@ -1015,7 +1021,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		velocityComparison:     velocityComparison,
 		shortcutsSidebar:       shortcutsSidebar,
 		graphView:              graphView,
-		tree:                   NewTreeModel(theme),
+		tree:                   treeModel,
 		insightsPanel:          insightsPanel,
 		theme:                  theme,
 		currentFilter:          "all",
@@ -1573,18 +1579,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "all":
 					include = true
 				case "open":
-					include = issue.Status != model.StatusClosed
+					include = !isClosedLikeStatus(issue.Status)
 				case "closed":
-					include = issue.Status == model.StatusClosed
+					include = isClosedLikeStatus(issue.Status)
 				case "ready":
 					// Ready = Open/InProgress AND NO Open Blockers
-					if issue.Status != model.StatusClosed && issue.Status != model.StatusBlocked {
+					if !isClosedLikeStatus(issue.Status) && issue.Status != model.StatusBlocked {
 						isBlocked := false
 						for _, dep := range issue.Dependencies {
-							if dep == nil || dep.Type != model.DepBlocks {
+							if dep == nil || !dep.Type.IsBlocking() {
 								continue
 							}
-							if blocker, exists := m.issueMap[dep.DependsOnID]; exists && blocker.Status != model.StatusClosed {
+							if blocker, exists := m.issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
 								isBlocked = true
 								break
 							}
@@ -1799,8 +1805,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Apply default sorting (Open first, Priority, Date)
 		sort.Slice(newIssues, func(i, j int) bool {
-			iClosed := newIssues[i].Status == model.StatusClosed
-			jClosed := newIssues[j].Status == model.StatusClosed
+			iClosed := isClosedLikeStatus(newIssues[i].Status)
+			jClosed := isClosedLikeStatus(newIssues[j].Status)
 			if iClosed != jClosed {
 				return !iClosed
 			}
@@ -1832,7 +1838,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.countOpen, m.countReady, m.countBlocked, m.countClosed = 0, 0, 0, 0
 		for i := range m.issues {
 			issue := &m.issues[i]
-			if issue.Status == model.StatusClosed {
+			if isClosedLikeStatus(issue.Status) {
 				m.countClosed++
 				continue
 			}
@@ -1846,7 +1852,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if dep == nil || !dep.Type.IsBlocking() {
 					continue
 				}
-				if blocker, exists := m.issueMap[dep.DependsOnID]; exists && blocker.Status != model.StatusClosed {
+				if blocker, exists := m.issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
 					isBlocked = true
 					break
 				}
@@ -4847,15 +4853,17 @@ func (m Model) renderLabelDrilldown() string {
 	total := len(issues)
 	open, blocked, inProgress, closed := 0, 0, 0, 0
 	for _, is := range issues {
+		if isClosedLikeStatus(is.Status) {
+			closed++
+			continue
+		}
 		switch is.Status {
-		case model.StatusOpen:
-			open++
 		case model.StatusBlocked:
 			blocked++
 		case model.StatusInProgress:
 			inProgress++
-		case model.StatusClosed:
-			closed++
+		default:
+			open++
 		}
 	}
 
@@ -5486,6 +5494,25 @@ func (m *Model) renderFooter() string {
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
+	// LARGE DATASET WARNING - Tiered performance mode (bv-9thm)
+	// ─────────────────────────────────────────────────────────────────────────
+	datasetSection := ""
+	if m.snapshot != nil && m.snapshot.LargeDatasetWarning != "" {
+		bg := ColorPrioHighBg
+		fg := ColorWarning
+		if m.snapshot.DatasetTier == datasetTierHuge {
+			bg = ColorPrioCriticalBg
+			fg = ColorPrioCritical
+		}
+		datasetStyle := lipgloss.NewStyle().
+			Background(bg).
+			Foreground(fg).
+			Bold(true).
+			Padding(0, 1)
+		datasetSection = datasetStyle.Render(m.snapshot.LargeDatasetWarning)
+	}
+
+	// ─────────────────────────────────────────────────────────────────────────
 	// ALERTS BADGE - Project health alerts (bv-168)
 	// ─────────────────────────────────────────────────────────────────────────
 	alertsSection := ""
@@ -5699,6 +5726,9 @@ func (m *Model) renderFooter() string {
 	if updateSection != "" {
 		leftWidth += lipgloss.Width(updateSection) + 1
 	}
+	if datasetSection != "" {
+		leftWidth += lipgloss.Width(datasetSection) + 1
+	}
 	rightWidth := lipgloss.Width(countBadge) + lipgloss.Width(keysSection)
 
 	remaining := m.width - leftWidth - rightWidth - 1
@@ -5734,6 +5764,9 @@ func (m *Model) renderFooter() string {
 	}
 	if updateSection != "" {
 		parts = append(parts, updateSection)
+	}
+	if datasetSection != "" {
+		parts = append(parts, datasetSection)
 	}
 	parts = append(parts, statsSection)
 	if phase2Section != "" {
@@ -5828,19 +5861,20 @@ func (m *Model) applyFilter() {
 		case "all":
 			include = true
 		case "open":
-			include = issue.Status != model.StatusClosed
+			include = !isClosedLikeStatus(issue.Status)
 		case "closed":
-			include = issue.Status == model.StatusClosed
+			include = isClosedLikeStatus(issue.Status)
 		case "ready":
 			// Ready = Open/InProgress AND NO Open Blockers
-			if issue.Status != model.StatusClosed && issue.Status != model.StatusBlocked {
+			if !isClosedLikeStatus(issue.Status) && issue.Status != model.StatusBlocked {
 				isBlocked := false
 				for _, dep := range issue.Dependencies {
-					if dep.Type == model.DepBlocks {
-						if blocker, exists := m.issueMap[dep.DependsOnID]; exists && blocker.Status != model.StatusClosed {
-							isBlocked = true
-							break
-						}
+					if dep == nil || !dep.Type.IsBlocking() {
+						continue
+					}
+					if blocker, exists := m.issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
+						isBlocked = true
+						break
 					}
 				}
 				include = !isBlocked
@@ -5942,8 +5976,8 @@ func (m *Model) sortFilteredItems(items []list.Item, issues []model.Issue) {
 			return iItem.Issue.UpdatedAt.After(jItem.Issue.UpdatedAt)
 		default:
 			// Default: Open first, then priority, then newest
-			iClosed := iItem.Issue.Status == model.StatusClosed
-			jClosed := jItem.Issue.Status == model.StatusClosed
+			iClosed := isClosedLikeStatus(iItem.Issue.Status)
+			jClosed := isClosedLikeStatus(jItem.Issue.Status)
 			if iClosed != jClosed {
 				return !iClosed
 			}
@@ -5963,6 +5997,25 @@ func (m *Model) sortFilteredItems(items []list.Item, issues []model.Issue) {
 	}
 	copy(items, sortedItems)
 	copy(issues, sortedIssues)
+}
+
+func matchesRecipeStatus(status model.Status, filter string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(filter))
+	statusKey := strings.ToLower(string(status))
+	switch normalized {
+	case string(model.StatusClosed):
+		return isClosedLikeStatus(status)
+	case string(model.StatusTombstone):
+		return status == model.StatusTombstone
+	case string(model.StatusOpen):
+		return status == model.StatusOpen
+	case string(model.StatusInProgress):
+		return status == model.StatusInProgress
+	case string(model.StatusBlocked):
+		return status == model.StatusBlocked
+	default:
+		return statusKey == normalized
+	}
 }
 
 // applyRecipe applies a recipe's filters and sort to the current view
@@ -5989,7 +6042,7 @@ func (m *Model) applyRecipe(r *recipe.Recipe) {
 		if len(r.Filters.Status) > 0 {
 			statusMatch := false
 			for _, s := range r.Filters.Status {
-				if string(issue.Status) == s {
+				if matchesRecipeStatus(issue.Status, s) {
 					statusMatch = true
 					break
 				}
@@ -6028,11 +6081,12 @@ func (m *Model) applyRecipe(r *recipe.Recipe) {
 			// Check if issue is blocked
 			isBlocked := false
 			for _, dep := range issue.Dependencies {
-				if dep.Type == model.DepBlocks {
-					if blocker, exists := m.issueMap[dep.DependsOnID]; exists && blocker.Status != model.StatusClosed {
-						isBlocked = true
-						break
-					}
+				if dep == nil || !dep.Type.IsBlocking() {
+					continue
+				}
+				if blocker, exists := m.issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
+					isBlocked = true
+					break
 				}
 			}
 			include = !isBlocked
@@ -6973,6 +7027,295 @@ func (m *Model) getCassSessionCount() int {
 	return 0
 }
 
+func parseCommandLine(input string) ([]string, error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil, nil
+	}
+
+	var args []string
+	var current strings.Builder
+	inSingle := false
+	inDouble := false
+
+	flush := func() {
+		if current.Len() == 0 {
+			return
+		}
+		args = append(args, current.String())
+		current.Reset()
+	}
+
+	for i := 0; i < len(input); {
+		ch := input[i]
+		if inSingle {
+			if ch == '\'' {
+				inSingle = false
+				i++
+				continue
+			}
+			current.WriteByte(ch)
+			i++
+			continue
+		}
+		if inDouble {
+			switch ch {
+			case '"':
+				inDouble = false
+				i++
+				continue
+			case '\\':
+				if i+1 >= len(input) {
+					return nil, fmt.Errorf("unterminated escape")
+				}
+				next := input[i+1]
+				// In double quotes, only treat \" and \\ as escapes; otherwise preserve backslash.
+				if next == '"' || next == '\\' {
+					current.WriteByte(next)
+					i += 2
+					continue
+				}
+				current.WriteByte('\\')
+				i++
+				continue
+			default:
+				current.WriteByte(ch)
+				i++
+				continue
+			}
+		}
+
+		switch ch {
+		case ' ', '\t', '\n', '\r':
+			flush()
+			i++
+		case '\'':
+			inSingle = true
+			i++
+		case '"':
+			inDouble = true
+			i++
+		case '\\':
+			if i+1 >= len(input) {
+				return nil, fmt.Errorf("unterminated escape")
+			}
+			next := input[i+1]
+			if next == ' ' || next == '\t' || next == '\n' || next == '\r' || next == '\\' || next == '"' || next == '\'' {
+				current.WriteByte(next)
+				i += 2
+				continue
+			}
+			current.WriteByte('\\')
+			i++
+		default:
+			current.WriteByte(ch)
+			i++
+		}
+	}
+
+	if inSingle {
+		return nil, fmt.Errorf("unterminated single quote")
+	}
+	if inDouble {
+		return nil, fmt.Errorf("unterminated double quote")
+	}
+	flush()
+	return args, nil
+}
+
+type editorCommandKind int
+
+const (
+	editorCommandOK editorCommandKind = iota
+	editorCommandEmpty
+	editorCommandTerminal
+	editorCommandForbidden
+)
+
+type allowlistedGUIEditorKind int
+
+const (
+	allowlistedGUIEditorUnknown allowlistedGUIEditorKind = iota
+	allowlistedGUIEditorOpenText
+	allowlistedGUIEditorXdgOpen
+	allowlistedGUIEditorCode
+	allowlistedGUIEditorCodeInsiders
+	allowlistedGUIEditorCursor
+	allowlistedGUIEditorGedit
+	allowlistedGUIEditorKate
+	allowlistedGUIEditorXed
+	allowlistedGUIEditorNotepad
+)
+
+var terminalEditorExecutables = map[string]bool{
+	"vim":   true,
+	"vi":    true,
+	"nvim":  true,
+	"nano":  true,
+	"emacs": true,
+	"pico":  true,
+	"joe":   true,
+	"ne":    true,
+}
+
+var forbiddenEditorExecutables = map[string]bool{
+	// Shells and command interpreters.
+	"sh":         true,
+	"bash":       true,
+	"zsh":        true,
+	"fish":       true,
+	"cmd":        true,
+	"powershell": true,
+	"pwsh":       true,
+}
+
+func normalizeExecutableBase(executable string) string {
+	executable = strings.TrimSpace(executable)
+	if executable == "" {
+		return ""
+	}
+	base := executable
+	if idx := strings.LastIndexAny(base, `/\`); idx >= 0 {
+		base = base[idx+1:]
+	}
+	base = strings.ToLower(base)
+	return strings.TrimSuffix(base, ".exe")
+}
+
+func classifyEditorCommand(editorArgs []string) (string, editorCommandKind) {
+	if len(editorArgs) == 0 {
+		return "", editorCommandEmpty
+	}
+	base := normalizeExecutableBase(editorArgs[0])
+	if base == "" {
+		return "", editorCommandEmpty
+	}
+	if terminalEditorExecutables[base] {
+		return base, editorCommandTerminal
+	}
+	if forbiddenEditorExecutables[base] {
+		return base, editorCommandForbidden
+	}
+	return base, editorCommandOK
+}
+
+func allowlistedGUIEditorKindForBase(base string) allowlistedGUIEditorKind {
+	switch base {
+	case "open":
+		return allowlistedGUIEditorOpenText
+	case "xdg-open":
+		return allowlistedGUIEditorXdgOpen
+	case "code":
+		return allowlistedGUIEditorCode
+	case "code-insiders":
+		return allowlistedGUIEditorCodeInsiders
+	case "cursor":
+		return allowlistedGUIEditorCursor
+	case "gedit":
+		return allowlistedGUIEditorGedit
+	case "kate":
+		return allowlistedGUIEditorKate
+	case "xed":
+		return allowlistedGUIEditorXed
+	case "notepad":
+		return allowlistedGUIEditorNotepad
+	default:
+		return allowlistedGUIEditorUnknown
+	}
+}
+
+func allowlistedGUIEditorDisplayName(kind allowlistedGUIEditorKind) string {
+	switch kind {
+	case allowlistedGUIEditorOpenText:
+		return "default text editor"
+	case allowlistedGUIEditorXdgOpen:
+		return "default app"
+	case allowlistedGUIEditorCode:
+		return "code"
+	case allowlistedGUIEditorCodeInsiders:
+		return "code-insiders"
+	case allowlistedGUIEditorCursor:
+		return "cursor"
+	case allowlistedGUIEditorGedit:
+		return "gedit"
+	case allowlistedGUIEditorKate:
+		return "kate"
+	case allowlistedGUIEditorXed:
+		return "xed"
+	case allowlistedGUIEditorNotepad:
+		return "notepad"
+	default:
+		return "editor"
+	}
+}
+
+func startAllowlistedGUIEditor(kind allowlistedGUIEditorKind, targetFile string) (allowlistedGUIEditorKind, error) {
+	switch kind {
+	case allowlistedGUIEditorOpenText:
+		return kind, exec.Command("open", "-t", targetFile).Start()
+	case allowlistedGUIEditorXdgOpen:
+		return kind, exec.Command("xdg-open", targetFile).Start()
+	case allowlistedGUIEditorCode:
+		if runtime.GOOS == "darwin" {
+			// Prefer launching the app directly so we don't depend on the `code` CLI being installed in PATH.
+			if err := exec.Command("open", "-a", "Visual Studio Code", targetFile).Start(); err == nil {
+				return kind, nil
+			}
+		}
+		if _, err := exec.LookPath("code"); err == nil {
+			return kind, exec.Command("code", targetFile).Start()
+		}
+		if runtime.GOOS == "linux" {
+			if _, err := exec.LookPath("xdg-open"); err == nil {
+				return allowlistedGUIEditorXdgOpen, exec.Command("xdg-open", targetFile).Start()
+			}
+		}
+		return kind, fmt.Errorf("code not found in PATH")
+	case allowlistedGUIEditorCodeInsiders:
+		if runtime.GOOS == "darwin" {
+			// Prefer launching the app directly so we don't depend on the `code-insiders` CLI being installed in PATH.
+			if err := exec.Command("open", "-a", "Visual Studio Code - Insiders", targetFile).Start(); err == nil {
+				return kind, nil
+			}
+		}
+		if _, err := exec.LookPath("code-insiders"); err == nil {
+			return kind, exec.Command("code-insiders", targetFile).Start()
+		}
+		if runtime.GOOS == "linux" {
+			if _, err := exec.LookPath("xdg-open"); err == nil {
+				return allowlistedGUIEditorXdgOpen, exec.Command("xdg-open", targetFile).Start()
+			}
+		}
+		return kind, fmt.Errorf("code-insiders not found in PATH")
+	case allowlistedGUIEditorCursor:
+		if runtime.GOOS == "darwin" {
+			// Prefer launching the app directly so we don't depend on the `cursor` CLI being installed in PATH.
+			if err := exec.Command("open", "-a", "Cursor", targetFile).Start(); err == nil {
+				return kind, nil
+			}
+		}
+		if _, err := exec.LookPath("cursor"); err == nil {
+			return kind, exec.Command("cursor", targetFile).Start()
+		}
+		if runtime.GOOS == "linux" {
+			if _, err := exec.LookPath("xdg-open"); err == nil {
+				return allowlistedGUIEditorXdgOpen, exec.Command("xdg-open", targetFile).Start()
+			}
+		}
+		return kind, fmt.Errorf("cursor not found in PATH")
+	case allowlistedGUIEditorGedit:
+		return kind, exec.Command("gedit", targetFile).Start()
+	case allowlistedGUIEditorKate:
+		return kind, exec.Command("kate", targetFile).Start()
+	case allowlistedGUIEditorXed:
+		return kind, exec.Command("xed", targetFile).Start()
+	case allowlistedGUIEditorNotepad:
+		return kind, exec.Command("notepad", targetFile).Start()
+	default:
+		return kind, fmt.Errorf("unsupported editor")
+	}
+}
+
 // openInEditor opens the beads file in the user's preferred editor
 // Uses m.beadsPath which respects issues.jsonl (canonical per beads upstream)
 func (m *Model) openInEditor() {
@@ -7001,89 +7344,76 @@ func (m *Model) openInEditor() {
 		editor = os.Getenv("VISUAL")
 	}
 
-	// Check if it's a terminal editor (won't work well with TUI)
-	// Extract just the command name (first word) to handle EDITOR with args like "cursor -w"
-	terminalEditors := map[string]bool{
-		"vim": true, "vi": true, "nvim": true, "nano": true,
-		"emacs": true, "pico": true, "joe": true, "ne": true,
-	}
-	editorCmd := strings.Fields(editor)
-	var editorBase string
-	if len(editorCmd) > 0 {
-		editorBase = filepath.Base(editorCmd[0])
-	}
-	if terminalEditors[editorBase] {
-		m.statusMsg = fmt.Sprintf("⚠️ %s is a terminal editor - set $EDITOR to a GUI editor or quit first", editorBase)
-		m.statusIsError = true
-		return
+	ignoredEditorBase := ""
+	var requestedEditorKind allowlistedGUIEditorKind
+	if editor != "" {
+		editorArgs, err := parseCommandLine(editor)
+		if err != nil {
+			m.statusMsg = fmt.Sprintf("❌ Invalid $EDITOR/$VISUAL: %v", err)
+			m.statusIsError = true
+			return
+		}
+
+		editorBase, kind := classifyEditorCommand(editorArgs)
+		switch kind {
+		case editorCommandTerminal:
+			m.statusMsg = fmt.Sprintf("⚠️ %s is a terminal editor - set $EDITOR to a GUI editor or quit first", editorBase)
+			m.statusIsError = true
+			return
+		case editorCommandForbidden:
+			m.statusMsg = fmt.Sprintf("❌ Refusing to run %s as editor (shell/interpreter). Set $EDITOR to a GUI editor", editorBase)
+			m.statusIsError = true
+			return
+		case editorCommandEmpty:
+			m.statusMsg = "❌ Invalid $EDITOR/$VISUAL: empty command"
+			m.statusIsError = true
+			return
+		default:
+			requestedEditorKind = allowlistedGUIEditorKindForBase(editorBase)
+			if requestedEditorKind == allowlistedGUIEditorUnknown {
+				ignoredEditorBase = editorBase
+				editor = ""
+			}
+		}
 	}
 
 	// If no editor set, try platform-specific GUI options
-	if editor == "" {
+	if editor == "" && requestedEditorKind == allowlistedGUIEditorUnknown {
 		switch runtime.GOOS {
 		case "darwin":
-			// Use 'open' to launch default app for .jsonl files
-			cmd := exec.Command("open", "-t", beadsFile)
-			if err := cmd.Start(); err == nil {
-				m.statusMsg = "📝 Opened in default text editor"
-				m.statusIsError = false
-				return
-			}
+			requestedEditorKind = allowlistedGUIEditorOpenText
 		case "windows":
-			editor = "notepad"
+			requestedEditorKind = allowlistedGUIEditorNotepad
 		case "linux":
 			// Try xdg-open first, then common GUI editors
-			for _, tryEditor := range []string{"xdg-open", "code", "gedit", "kate", "xed"} {
+			for _, tryEditor := range []string{"xdg-open", "code", "code-insiders", "cursor", "gedit", "kate", "xed"} {
 				if _, err := exec.LookPath(tryEditor); err == nil {
-					editor = tryEditor
+					requestedEditorKind = allowlistedGUIEditorKindForBase(tryEditor)
 					break
 				}
 			}
 		}
 	}
 
-	if editor == "" {
+	if requestedEditorKind == allowlistedGUIEditorUnknown {
 		m.statusMsg = "❌ No GUI editor found. Set $EDITOR to a GUI editor"
 		m.statusIsError = true
 		return
 	}
 
-	// Recompute editorBase if it was auto-detected (user didn't set EDITOR/VISUAL)
-	if editorBase == "" {
-		editorCmd = strings.Fields(editor)
-		if len(editorCmd) > 0 {
-			editorBase = filepath.Base(editorCmd[0])
-		}
-	}
-
-	// Launch GUI editor in background
-	// Handle EDITOR with arguments (e.g., "cursor -w", "code --wait") by using shell
-	var cmd *exec.Cmd
-	if strings.Contains(editor, " ") {
-		// EDITOR contains arguments - use shell to parse them correctly
-		// This matches git's behavior with $EDITOR
-		switch runtime.GOOS {
-		case "windows":
-			// Escape double quotes and wrap in double quotes for Windows cmd.exe
-			escapedFile := strings.ReplaceAll(beadsFile, `"`, `""`)
-			cmd = exec.Command("cmd", "/c", editor+` "`+escapedFile+`"`)
-		default:
-			// Use single quotes for Unix shells to prevent all shell expansion.
-			// Single quotes within the path are escaped as: end quote, escaped quote, start quote.
-			escapedFile := strings.ReplaceAll(beadsFile, "'", `'\''`)
-			cmd = exec.Command("sh", "-c", editor+" '"+escapedFile+"'")
-		}
-	} else {
-		// Simple editor command without arguments
-		cmd = exec.Command(editor, beadsFile)
-	}
-	if err := cmd.Start(); err != nil {
+	actualKind, err := startAllowlistedGUIEditor(requestedEditorKind, beadsFile)
+	if err != nil {
 		m.statusMsg = fmt.Sprintf("❌ Failed to open editor: %v", err)
 		m.statusIsError = true
 		return
 	}
+	requestedEditorKind = actualKind
 
-	m.statusMsg = fmt.Sprintf("📝 Opened in %s", editorBase)
+	if ignoredEditorBase != "" {
+		m.statusMsg = fmt.Sprintf("📝 Opened in %s (ignored $EDITOR=%s)", allowlistedGUIEditorDisplayName(requestedEditorKind), ignoredEditorBase)
+	} else {
+		m.statusMsg = fmt.Sprintf("📝 Opened in %s", allowlistedGUIEditorDisplayName(requestedEditorKind))
+	}
 	m.statusIsError = false
 }
 
@@ -7128,10 +7458,10 @@ func computeAlerts(issues []model.Issue, stats *analysis.GraphStats, analyzer *a
 
 	openCount, closedCount, blockedCount := 0, 0, 0
 	for _, issue := range issues {
-		switch issue.Status {
-		case model.StatusClosed:
+		switch {
+		case isClosedLikeStatus(issue.Status):
 			closedCount++
-		case model.StatusBlocked:
+		case issue.Status == model.StatusBlocked:
 			blockedCount++
 		default:
 			openCount++

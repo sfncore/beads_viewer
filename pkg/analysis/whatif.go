@@ -3,8 +3,6 @@ package analysis
 import (
 	"sort"
 	"time"
-
-	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
 
 // PriorityExplanation provides detailed reasoning for a priority recommendation
@@ -233,7 +231,7 @@ func (a *Analyzer) TopWhatIfDeltas(n int) []WhatIfEntry {
 	var results []WhatIfEntry
 
 	for id, issue := range a.issueMap {
-		if issue.Status == model.StatusClosed {
+		if isClosedLikeStatus(issue.Status) {
 			continue
 		}
 		delta := a.computeWhatIfDelta(id)

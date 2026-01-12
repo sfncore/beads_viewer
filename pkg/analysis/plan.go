@@ -64,7 +64,7 @@ func (a *Analyzer) GetExecutionPlan() ExecutionPlan {
 	// Calculate totals
 	totalOpen := 0
 	for _, issue := range a.issueMap {
-		if issue.Status != model.StatusClosed {
+		if !isClosedLikeStatus(issue.Status) {
 			totalOpen++
 		}
 	}
@@ -101,8 +101,8 @@ func (a *Analyzer) computeUnblocks(issueID string) []string {
 		dependentID := a.nodeToID[dependentNode.ID()]
 		dependentIssue := a.issueMap[dependentID]
 
-		// Skip closed issues (they don't need unblocking)
-		if dependentIssue.Status == model.StatusClosed {
+		// Skip closed/tombstone issues (they don't need unblocking)
+		if isClosedLikeStatus(dependentIssue.Status) {
 			continue
 		}
 
@@ -122,7 +122,7 @@ func (a *Analyzer) computeUnblocks(issueID string) []string {
 
 			// Check status of other blocker
 			if otherBlocker, exists := a.issueMap[otherBlockerID]; exists {
-				if otherBlocker.Status != model.StatusClosed {
+				if !isClosedLikeStatus(otherBlocker.Status) {
 					stillBlocked = true
 					break
 				}

@@ -7,8 +7,10 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
 
 // =============================================================================
@@ -202,6 +204,201 @@ func TestFindJSONLPathWithWarnings_ReportsMergeArtifacts(t *testing.T) {
 	}
 	if !strings.Contains(warnings[0], "bd clean") {
 		t.Errorf("Warning should suggest 'bd clean': %s", warnings[0])
+	}
+}
+
+func TestIssuePoolResetsFields(t *testing.T) {
+	issue := loader.GetIssue()
+	if issue == nil {
+		t.Fatal("GetIssue returned nil")
+	}
+
+	now := time.Now()
+	ext := "ref"
+	issue.ID = "id-1"
+	issue.Title = "title"
+	issue.Description = "desc"
+	issue.Assignee = "owner"
+	issue.DueDate = &now
+	issue.ClosedAt = &now
+	issue.EstimatedMinutes = new(int)
+	*issue.EstimatedMinutes = 42
+	issue.ExternalRef = &ext
+	issue.Dependencies = append(issue.Dependencies, &model.Dependency{IssueID: "id-1"})
+	issue.Comments = append(issue.Comments, &model.Comment{ID: 1, Text: "note"})
+	issue.Labels = append(issue.Labels, "label-a")
+
+	loader.PutIssue(issue)
+
+	reset := loader.GetIssue()
+	defer loader.PutIssue(reset)
+
+	if reset.ID != "" || reset.Title != "" || reset.Description != "" || reset.Assignee != "" {
+		t.Fatalf("expected scalar fields to be cleared, got ID=%q title=%q desc=%q assignee=%q", reset.ID, reset.Title, reset.Description, reset.Assignee)
+	}
+	if reset.DueDate != nil || reset.ClosedAt != nil || reset.EstimatedMinutes != nil || reset.ExternalRef != nil {
+		t.Fatalf("expected pointer fields to be nil: due=%v closed=%v est=%v ext=%v", reset.DueDate, reset.ClosedAt, reset.EstimatedMinutes, reset.ExternalRef)
+	}
+	if len(reset.Dependencies) != 0 {
+		t.Fatalf("expected dependencies to be reset, got %d", len(reset.Dependencies))
+	}
+	if len(reset.Comments) != 0 {
+		t.Fatalf("expected comments to be reset, got %d", len(reset.Comments))
+	}
+	if len(reset.Labels) != 0 {
+		t.Fatalf("expected labels to be reset, got %d", len(reset.Labels))
+	}
+	if cap(reset.Dependencies) == 0 || cap(reset.Comments) == 0 || cap(reset.Labels) == 0 {
+		t.Fatalf("expected pooled slices to retain capacity, got deps=%d comments=%d labels=%d", cap(reset.Dependencies), cap(reset.Comments), cap(reset.Labels))
+	}
+}
+
+func TestParseIssuesWithOptionsPooled_SkipsInvalidLines(t *testing.T) {
+	input := strings.Join([]string{
+		`{"id":"a","title":"A","status":"open","priority":1,"issue_type":"task"}`,
+		`{bad json`,
+		`{"id":"b","title":"B","status":"blocked","priority":2,"issue_type":"bug"}`,
+	}, "\n") + "\n"
+
+	result, err := loader.ParseIssuesWithOptionsPooled(strings.NewReader(input), loader.ParseOptions{})
+	if err != nil {
+		t.Fatalf("ParseIssuesWithOptionsPooled failed: %v", err)
+	}
+	if len(result.Issues) != 2 {
+		t.Fatalf("expected 2 issues, got %d", len(result.Issues))
+	}
+	if len(result.PoolRefs) != 2 {
+		t.Fatalf("expected 2 pool refs, got %d", len(result.PoolRefs))
+	}
+	if result.Issues[0].ID != "a" || result.Issues[1].ID != "b" {
+		t.Fatalf("unexpected issue IDs: %q %q", result.Issues[0].ID, result.Issues[1].ID)
+	}
+	if result.PoolRefs[0] == nil || result.PoolRefs[1] == nil {
+		t.Fatalf("expected non-nil pool refs")
+	}
+
+	loader.ReturnIssuePtrsToPool(result.PoolRefs)
+	for i, ref := range result.PoolRefs {
+		if ref == nil {
+			continue
+		}
+		if ref.ID != "" || ref.Title != "" || ref.Description != "" {
+			t.Fatalf("expected pooled issue %d to be reset, got ID=%q title=%q desc=%q", i, ref.ID, ref.Title, ref.Description)
+		}
+		if len(ref.Dependencies) != 0 || len(ref.Comments) != 0 || len(ref.Labels) != 0 {
+			t.Fatalf("expected pooled issue %d slices to be reset", i)
+		}
+	}
+}
+
+func TestParseIssues_NormalizesStatus(t *testing.T) {
+	input := `{"id":"a","title":"A","status":" TombStone ","priority":1,"issue_type":"task"}`
+
+	issues, err := loader.ParseIssues(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseIssues failed: %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("expected 1 issue, got %d", len(issues))
+	}
+	if issues[0].Status != model.StatusTombstone {
+		t.Fatalf("expected normalized status %q, got %q", model.StatusTombstone, issues[0].Status)
+	}
+}
+
+func TestParseIssuesWithOptionsPooled_IssueFilter_SkipsClosed(t *testing.T) {
+	input := strings.Join([]string{
+		`{"id":"a","title":"A","status":"open","priority":1,"issue_type":"task"}`,
+		`{"id":"b","title":"B","status":"closed","priority":2,"issue_type":"task"}`,
+		`{"id":"c","title":"C","status":"blocked","priority":3,"issue_type":"task"}`,
+	}, "\n") + "\n"
+
+	result, err := loader.ParseIssuesWithOptionsPooled(strings.NewReader(input), loader.ParseOptions{
+		IssueFilter: func(i *model.Issue) bool {
+			return i.Status != model.StatusClosed
+		},
+	})
+	if err != nil {
+		t.Fatalf("ParseIssuesWithOptionsPooled failed: %v", err)
+	}
+	if len(result.Issues) != 2 {
+		t.Fatalf("expected 2 issues, got %d", len(result.Issues))
+	}
+	if len(result.PoolRefs) != 2 {
+		t.Fatalf("expected 2 pool refs, got %d", len(result.PoolRefs))
+	}
+	if got := []string{result.Issues[0].ID, result.Issues[1].ID}; got[0] != "a" || got[1] != "c" {
+		t.Fatalf("unexpected issue IDs: %#v", got)
+	}
+
+	loader.ReturnIssuePtrsToPool(result.PoolRefs)
+}
+
+func TestLoadIssuesFromFileWithOptionsPooled_ReturnsPoolRefs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "issues.jsonl")
+	content := strings.Join([]string{
+		`{"id":"a","title":"A","status":"open","priority":1,"issue_type":"task"}`,
+		`{bad json`,
+		`{"id":"b","title":"B","status":"open","priority":2,"issue_type":"feature"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	result, err := loader.LoadIssuesFromFileWithOptionsPooled(path, loader.ParseOptions{})
+	if err != nil {
+		t.Fatalf("LoadIssuesFromFileWithOptionsPooled failed: %v", err)
+	}
+	if len(result.Issues) != 2 {
+		t.Fatalf("expected 2 issues, got %d", len(result.Issues))
+	}
+	if len(result.PoolRefs) != 2 {
+		t.Fatalf("expected 2 pool refs, got %d", len(result.PoolRefs))
+	}
+
+	loader.ReturnIssuePtrsToPool(result.PoolRefs)
+	for i, ref := range result.PoolRefs {
+		if ref == nil {
+			continue
+		}
+		if ref.ID != "" || ref.Title != "" {
+			t.Fatalf("expected pooled issue %d to be reset, got ID=%q title=%q", i, ref.ID, ref.Title)
+		}
+		if len(ref.Dependencies) != 0 || len(ref.Comments) != 0 || len(ref.Labels) != 0 {
+			t.Fatalf("expected pooled issue %d slices to be reset", i)
+		}
+	}
+}
+
+type errAfterRead struct {
+	data []byte
+	read bool
+}
+
+func (r *errAfterRead) Read(p []byte) (int, error) {
+	if r.read {
+		return 0, fmt.Errorf("boom")
+	}
+	r.read = true
+	n := copy(p, r.data)
+	return n, nil
+}
+
+func TestParseIssuesWithOptionsPooled_ErrorReturnsNoIssues(t *testing.T) {
+	reader := &errAfterRead{
+		data: []byte(`{"id":"a","title":"A","status":"open","priority":1,"issue_type":"task"}` + "\n"),
+	}
+
+	result, err := loader.ParseIssuesWithOptionsPooled(reader, loader.ParseOptions{})
+	if err == nil {
+		t.Fatal("expected error from ParseIssuesWithOptionsPooled")
+	}
+	if len(result.Issues) != 0 {
+		t.Fatalf("expected no issues on error, got %d", len(result.Issues))
+	}
+	if len(result.PoolRefs) != 0 {
+		t.Fatalf("expected no pool refs on error, got %d", len(result.PoolRefs))
 	}
 }
 
@@ -731,12 +928,12 @@ func TestLoadIssuesFromFile_MissingID(t *testing.T) {
 func TestGetBeadsDir_RespectsEnvVar(t *testing.T) {
 	// Set up custom directory
 	customDir := t.TempDir()
-	
+
 	// Set environment variable
 	oldVal := os.Getenv(loader.BeadsDirEnvVar)
 	os.Setenv(loader.BeadsDirEnvVar, customDir)
 	defer os.Setenv(loader.BeadsDirEnvVar, oldVal)
-	
+
 	result, err := loader.GetBeadsDir("/some/random/path")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -749,16 +946,16 @@ func TestGetBeadsDir_RespectsEnvVar(t *testing.T) {
 func TestGetBeadsDir_EnvVarOverridesRepoPath(t *testing.T) {
 	customDir := t.TempDir()
 	repoPath := t.TempDir()
-	
+
 	oldVal := os.Getenv(loader.BeadsDirEnvVar)
 	os.Setenv(loader.BeadsDirEnvVar, customDir)
 	defer os.Setenv(loader.BeadsDirEnvVar, oldVal)
-	
+
 	result, err := loader.GetBeadsDir(repoPath)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	
+
 	// BEADS_DIR should win over repoPath
 	if result != customDir {
 		t.Errorf("BEADS_DIR should override repoPath: got %s, want %s", result, customDir)
@@ -774,10 +971,10 @@ func TestGetBeadsDir_FallsBackToBeadsDir(t *testing.T) {
 			os.Setenv(loader.BeadsDirEnvVar, oldVal)
 		}
 	}()
-	
+
 	repoPath := "/some/repo/path"
 	expected := filepath.Join(repoPath, ".beads")
-	
+
 	result, err := loader.GetBeadsDir(repoPath)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -796,13 +993,13 @@ func TestGetBeadsDir_EmptyRepoPath_UsesCwd(t *testing.T) {
 			os.Setenv(loader.BeadsDirEnvVar, oldVal)
 		}
 	}()
-	
+
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Failed to get cwd: %v", err)
 	}
 	expected := filepath.Join(cwd, ".beads")
-	
+
 	result, err := loader.GetBeadsDir("")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -823,10 +1020,10 @@ func TestGetBeadsDir_EnvVarEmpty_FallsBack(t *testing.T) {
 			os.Unsetenv(loader.BeadsDirEnvVar)
 		}
 	}()
-	
+
 	repoPath := "/some/repo"
 	expected := filepath.Join(repoPath, ".beads")
-	
+
 	result, err := loader.GetBeadsDir(repoPath)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)

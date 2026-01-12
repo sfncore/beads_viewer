@@ -532,7 +532,8 @@ func TestCoverageSetCapping(t *testing.T) {
 func TestCoverageSetClosedIssuesIgnored(t *testing.T) {
 	// Closed issues should not be considered
 	issues := []model.Issue{
-		{ID: "A", Status: model.StatusClosed}, // Closed - should be ignored
+		{ID: "A", Status: model.StatusClosed},    // Closed - should be ignored
+		{ID: "T", Status: model.StatusTombstone}, // Tombstone - should be ignored
 		{ID: "B", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "A", Type: model.DepBlocks}}},
 		{ID: "C", Status: model.StatusOpen},
 	}
