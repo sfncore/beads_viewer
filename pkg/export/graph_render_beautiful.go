@@ -2,12 +2,16 @@ package export
 
 import (
 	"fmt"
+	"html"
 	"time"
 )
 
 // generateUltimateHTML creates the enhanced HTML visualization with all features
 func generateUltimateHTML(title, dataHash, graphDataJSON string, nodeCount, edgeCount int, projectName, forceGraphLib, markedLib string) string {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	safeTitle := html.EscapeString(title)
+	safeHash := html.EscapeString(dataHash)
+	safeProject := html.EscapeString(projectName)
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1848,5 +1852,5 @@ loadPreferences();
 setTimeout(() => { Graph.zoomToFit(400, 50); updateVisibleCount(); updateMinimap(); }, 800);
     </script>
 </body>
-</html>`, title, title, nodeCount, edgeCount, nodeCount, nodeCount, edgeCount, timestamp, dataHash, projectName, forceGraphLib, markedLib, graphDataJSON)
+</html>`, safeTitle, safeTitle, nodeCount, edgeCount, nodeCount, nodeCount, edgeCount, timestamp, safeHash, safeProject, forceGraphLib, markedLib, graphDataJSON)
 }

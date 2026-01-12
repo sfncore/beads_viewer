@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -138,12 +139,21 @@ func TestSVG_HasViewportDimensions(t *testing.T) {
 		t.Fatal("Could not extract width/height from SVG")
 	}
 
-	// Verify minimum dimensions (640x480)
-	if widthMatch[1] < "640" {
-		t.Errorf("SVG width should be at least 640, got %s", widthMatch[1])
+	widthVal, err := strconv.Atoi(widthMatch[1])
+	if err != nil {
+		t.Fatalf("invalid SVG width %q: %v", widthMatch[1], err)
 	}
-	if heightMatch[1] < "480" {
-		t.Errorf("SVG height should be at least 480, got %s", heightMatch[1])
+	heightVal, err := strconv.Atoi(heightMatch[1])
+	if err != nil {
+		t.Fatalf("invalid SVG height %q: %v", heightMatch[1], err)
+	}
+
+	// Verify minimum dimensions (640x480)
+	if widthVal < 640 {
+		t.Errorf("SVG width should be at least 640, got %d", widthVal)
+	}
+	if heightVal < 480 {
+		t.Errorf("SVG height should be at least 480, got %d", heightVal)
 	}
 }
 

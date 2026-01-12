@@ -1,11 +1,15 @@
 package export
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -130,6 +134,26 @@ func TestPreviewServer_Start_MissingIndex(t *testing.T) {
 	}
 }
 
+func TestStartPreviewWithConfig_MissingIndexReturnsError(t *testing.T) {
+	// Create a temp directory without index.html
+	tmpDir := t.TempDir()
+
+	cfg := PreviewConfig{
+		BundlePath:  tmpDir,
+		Port:        0,
+		OpenBrowser: false,
+		Quiet:       true,
+	}
+
+	err := StartPreviewWithConfig(cfg)
+	if err == nil {
+		t.Fatal("Expected error for missing index.html")
+	}
+	if !strings.Contains(err.Error(), "no index.html found") {
+		t.Fatalf("Expected missing index error, got: %v", err)
+	}
+}
+
 func TestPreviewServer_Integration(t *testing.T) {
 	// Create a temp bundle directory
 	tmpDir := t.TempDir()
@@ -222,6 +246,70 @@ func TestPreviewServer_Integration(t *testing.T) {
 	}
 }
 
+func TestPreviewServer_StatusHandler_EmitsValidJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Include a control character in the bundle path. fmt's %q uses Go escapes (e.g. \x01),
+	// which are NOT valid JSON escapes, so this ensures we don't hand-roll JSON here.
+	// Windows generally forbids control characters in file paths.
+	if runtime.GOOS == "windows" {
+		t.Skip("control-character paths are not supported on windows")
+	}
+
+	segment := "x" + string([]byte{0x01}) + "y"
+	bundleDir := filepath.Join(tmpDir, segment)
+	if err := os.MkdirAll(bundleDir, 0755); err != nil {
+		t.Skipf("skipping control-char path test (mkdir failed): %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(bundleDir, "index.html"), []byte("<!doctype html><title>ok</title>"), 0644); err != nil {
+		t.Fatalf("WriteFile index.html: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "data.json"), []byte(`{"ok":true}`), 0644); err != nil {
+		t.Fatalf("WriteFile data.json: %v", err)
+	}
+
+	server := NewPreviewServer(bundleDir, 1234)
+
+	req := httptest.NewRequest(http.MethodGet, "/__preview__/status", nil)
+	rec := httptest.NewRecorder()
+	server.statusHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	type statusResponse struct {
+		Status     string `json:"status"`
+		Port       int    `json:"port"`
+		BundlePath string `json:"bundle_path"`
+		HasIndex   bool   `json:"has_index"`
+		FileCount  int    `json:"file_count"`
+	}
+
+	var got statusResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("expected valid JSON, got error: %v (body=%q)", err, rec.Body.String())
+	}
+
+	if got.Status != "running" {
+		t.Fatalf("status=%q, want %q", got.Status, "running")
+	}
+	if got.Port != 1234 {
+		t.Fatalf("port=%d, want %d", got.Port, 1234)
+	}
+	if !got.HasIndex {
+		t.Fatalf("has_index=%v, want true", got.HasIndex)
+	}
+	if got.FileCount < 2 {
+		t.Fatalf("file_count=%d, want >= 2", got.FileCount)
+	}
+
+	if got.BundlePath != bundleDir {
+		t.Fatalf("bundle_path=%q, want %q", got.BundlePath, bundleDir)
+	}
+}
+
 func TestNoCacheMiddleware(t *testing.T) {
 	// Create a simple handler
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -254,6 +342,29 @@ func TestNoCacheMiddleware(t *testing.T) {
 	// Verify no CORS headers
 	if rec.headers.Get("Access-Control-Allow-Origin") != "" {
 		t.Error("Unexpected CORS header Access-Control-Allow-Origin found")
+	}
+}
+
+func TestPreviewServer_StatusJSONEncoding(t *testing.T) {
+	invalidPath := string([]byte{0xff, 0xfe, 'b'})
+	server := NewPreviewServer(invalidPath, 19090)
+
+	req := httptest.NewRequest(http.MethodGet, "/__preview__/status", nil)
+	rec := httptest.NewRecorder()
+
+	server.statusHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("expected valid JSON, got error: %v", err)
+	}
+
+	if payload["status"] != "running" {
+		t.Errorf("expected status=running, got %v", payload["status"])
 	}
 }
 

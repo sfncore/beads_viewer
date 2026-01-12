@@ -6,12 +6,14 @@ package export
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -145,8 +147,26 @@ func (p *PreviewServer) statusHandler(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 
-	fmt.Fprintf(w, `{"status":"running","port":%d,"bundle_path":%q,"has_index":%v,"file_count":%d}`,
-		p.port, p.bundlePath, hasIndex, fileCount)
+	type statusResponse struct {
+		Status     string `json:"status"`
+		Port       int    `json:"port"`
+		BundlePath string `json:"bundle_path"`
+		HasIndex   bool   `json:"has_index"`
+		FileCount  int    `json:"file_count"`
+	}
+
+	resp := statusResponse{
+		Status:     "running",
+		Port:       p.port,
+		BundlePath: strings.ToValidUTF8(p.bundlePath, "?"),
+		HasIndex:   hasIndex,
+		FileCount:  fileCount,
+	}
+
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		http.Error(w, fmt.Sprintf("encode preview status: %v", err), http.StatusInternalServerError)
+		return
+	}
 }
 
 // noCacheMiddleware adds headers to prevent browser caching.
@@ -217,6 +237,20 @@ func DefaultPreviewConfig() PreviewConfig {
 
 // StartPreviewWithConfig starts a preview server with the given configuration.
 func StartPreviewWithConfig(config PreviewConfig) error {
+	// Verify bundle exists
+	if config.BundlePath == "" {
+		return fmt.Errorf("bundle path is required")
+	}
+	if _, err := os.Stat(config.BundlePath); os.IsNotExist(err) {
+		return fmt.Errorf("bundle path does not exist: %s", config.BundlePath)
+	}
+
+	// Check for index.html (match PreviewServer.Start behavior)
+	indexPath := filepath.Join(config.BundlePath, "index.html")
+	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
+		return fmt.Errorf("no index.html found in bundle: %s", config.BundlePath)
+	}
+
 	// Auto-select port if needed
 	port := config.Port
 	if port == 0 {
@@ -225,11 +259,6 @@ func StartPreviewWithConfig(config PreviewConfig) error {
 		if err != nil {
 			return fmt.Errorf("could not find available port: %w", err)
 		}
-	}
-
-	// Verify bundle exists
-	if _, err := os.Stat(config.BundlePath); os.IsNotExist(err) {
-		return fmt.Errorf("bundle path does not exist: %s", config.BundlePath)
 	}
 
 	// Create server

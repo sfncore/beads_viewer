@@ -605,7 +605,7 @@ func (e *SQLiteExporter) GetExportedIssues() []ExportIssue {
 			}
 		} else if e.Stats != nil {
 			exp.PageRank = e.Stats.GetPageRankScore(issue.ID)
-			exp.Betweenness = e.Stats.Betweenness()[issue.ID]
+			exp.Betweenness, _ = e.Stats.BetweennessValue(issue.ID) // O(1) lookup via bv-77ec
 			exp.CriticalPath = int(e.Stats.GetCriticalPathScore(issue.ID))
 		}
 
