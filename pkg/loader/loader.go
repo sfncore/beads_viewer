@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -23,6 +24,7 @@ var PreferredJSONLNames = []string{"issues.jsonl", "beads.jsonl", "beads.base.js
 // GetBeadsDir returns the beads directory path, respecting BEADS_DIR env var.
 // If BEADS_DIR is set, it is used directly.
 // Otherwise, falls back to .beads in the given repoPath (or cwd if empty).
+// For git worktrees, this automatically detects and uses the main repository root.
 func GetBeadsDir(repoPath string) (string, error) {
 	// Check BEADS_DIR environment variable first
 	if envDir := os.Getenv(BeadsDirEnvVar); envDir != "" {
@@ -38,7 +40,69 @@ func GetBeadsDir(repoPath string) (string, error) {
 		}
 	}
 
-	return filepath.Join(repoPath, ".beads"), nil
+	// Check for .beads in the given path first
+	beadsDir := filepath.Join(repoPath, ".beads")
+	if _, err := os.Stat(beadsDir); err == nil {
+		return beadsDir, nil
+	}
+
+	// If not found, check if we're in a git worktree and look in the main repo
+	mainRepoRoot, err := getMainRepoRoot(repoPath)
+	if err == nil && mainRepoRoot != "" && mainRepoRoot != repoPath {
+		mainBeadsDir := filepath.Join(mainRepoRoot, ".beads")
+		if _, err := os.Stat(mainBeadsDir); err == nil {
+			return mainBeadsDir, nil
+		}
+	}
+
+	// Return the original path even if .beads doesn't exist
+	// (caller will handle the error)
+	return beadsDir, nil
+}
+
+// getMainRepoRoot returns the root directory of the main git repository.
+// For regular repos, this returns the repo root.
+// For worktrees, this returns the main repository root (not the worktree root).
+func getMainRepoRoot(repoPath string) (string, error) {
+	// First, check if we're in a git repository at all
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd.Dir = repoPath
+	topLevelOut, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("not a git repository: %w", err)
+	}
+	worktreeRoot := strings.TrimSpace(string(topLevelOut))
+
+	// Check if this is a worktree by looking at the git-common-dir
+	// For regular repos: git-common-dir == git-dir
+	// For worktrees: git-common-dir points to main repo's .git
+	cmd = exec.Command("git", "rev-parse", "--path-format=absolute", "--git-common-dir")
+	cmd.Dir = repoPath
+	commonDirOut, err := cmd.Output()
+	if err != nil {
+		// Fallback: not a worktree or old git version
+		return worktreeRoot, nil
+	}
+	commonDir := strings.TrimSpace(string(commonDirOut))
+
+	cmd = exec.Command("git", "rev-parse", "--path-format=absolute", "--git-dir")
+	cmd.Dir = repoPath
+	gitDirOut, err := cmd.Output()
+	if err != nil {
+		return worktreeRoot, nil
+	}
+	gitDir := strings.TrimSpace(string(gitDirOut))
+
+	// If git-common-dir == git-dir, we're in a regular repo
+	if commonDir == gitDir {
+		return worktreeRoot, nil
+	}
+
+	// We're in a worktree. The main repo root is the parent of git-common-dir.
+	// git-common-dir typically points to /path/to/main-repo/.git
+	mainRepoRoot := filepath.Dir(commonDir)
+
+	return mainRepoRoot, nil
 }
 
 // FindJSONLPath locates the beads JSONL file in the given directory.
