@@ -2474,12 +2474,49 @@ func main() {
 	}
 
 	if *robotTriage || *robotNext || *robotTriageByTrack || *robotTriageByLabel {
+		// Attempt to load history for staleness analysis
+		// We use a best-effort approach here - if history isn't available or fails,
+		// we just proceed without staleness data.
+		var historyReport *correlation.HistoryReport
+		if cwd, err := os.Getwd(); err == nil {
+			if beadsDir, err := loader.GetBeadsDir(""); err == nil {
+				if beadsPath, err := loader.FindJSONLPath(beadsDir); err == nil {
+					// Use a smaller limit for triage to keep it fast, unless overridden
+					limit := *historyLimit
+					if limit == 500 { // If default
+						limit = 200 // Use smaller default for triage
+					}
+
+					// Validate repo first
+					if correlation.ValidateRepository(cwd) == nil {
+						beadInfos := make([]correlation.BeadInfo, len(issues))
+						for i, issue := range issues {
+							beadInfos[i] = correlation.BeadInfo{
+								ID:     issue.ID,
+								Title:  issue.Title,
+								Status: string(issue.Status),
+							}
+						}
+
+						correlator := correlation.NewCorrelator(cwd, beadsPath)
+						opts := correlation.CorrelatorOptions{Limit: limit}
+						
+						// Swallow errors for triage flow - staleness is optional
+						if report, err := correlator.GenerateReport(beadInfos, opts); err == nil {
+							historyReport = report
+						}
+					}
+				}
+			}
+		}
+
 		// bv-87: Support track/label-aware grouping for multi-agent coordination
 		opts := analysis.TriageOptions{
 			GroupByTrack:  *robotTriageByTrack,
 			GroupByLabel:  *robotTriageByLabel,
 			WaitForPhase2: true,  // Triage needs full graph metrics
 			UseFastConfig: true,  // Use minimal Phase 2 config for robot mode (bv-t1js)
+			History:       historyReport,
 		}
 		triage := analysis.ComputeTriageWithOptions(issues, opts)
 

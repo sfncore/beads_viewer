@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
 
@@ -299,6 +300,9 @@ type TriageOptions struct {
 	// bv-87: Track/label-aware recommendation grouping for multi-agent coordination
 	GroupByTrack bool // Group recommendations by execution track (connected component)
 	GroupByLabel bool // Group recommendations by primary label
+
+	// History report for staleness analysis
+	History *correlation.HistoryReport
 }
 
 // TrackRecommendationGroup groups recommendations by execution track (bv-87)
@@ -424,6 +428,12 @@ func ComputeTriageFromAnalyzer(analyzer *Analyzer, stats *GraphStats, issues []m
 		recsByLabel = buildRecommendationsByLabel(recommendations, unblocksMap)
 	}
 
+	// Calculate staleness if history is available
+	var staleness *Staleness
+	if opts.History != nil {
+		staleness = ComputeStaleness(opts.History, issues, now)
+	}
+
 	return TriageResult{
 		Meta: TriageMeta{
 			Version:       "1.0.0",
@@ -445,12 +455,66 @@ func ComputeTriageFromAnalyzer(analyzer *Analyzer, stats *GraphStats, issues []m
 		RecommendationsByTrack: recsByTrack,
 		RecommendationsByLabel: recsByLabel,
 		ProjectHealth: ProjectHealth{
-			Counts:   counts,
-			Graph:    buildGraphHealth(stats),
-			Velocity: projectVelocity,
-			// Staleness remains nil until history integration is ready
+			Counts:    counts,
+			Graph:     buildGraphHealth(stats),
+			Velocity:  projectVelocity,
+			Staleness: staleness,
 		},
 		Commands: buildCommands(topID),
+	}
+}
+
+// ComputeStaleness calculates staleness metrics from history
+func ComputeStaleness(history *correlation.HistoryReport, issues []model.Issue, now time.Time) *Staleness {
+	const thresholdDays = 14
+	threshold := now.AddDate(0, 0, -thresholdDays)
+	staleCount := 0
+	maxDays := 0
+	stalestID := ""
+
+	for _, issue := range issues {
+		if issue.Status == model.StatusClosed || issue.Status == model.StatusTombstone {
+			continue
+		}
+
+		// Use history events to find true last activity
+		var lastActivity time.Time
+		if h, ok := history.Histories[issue.ID]; ok {
+			if len(h.Events) > 0 {
+				lastActivity = h.Events[len(h.Events)-1].Timestamp
+			}
+			if len(h.Commits) > 0 {
+				lastCommit := h.Commits[len(h.Commits)-1].Timestamp
+				if lastCommit.After(lastActivity) {
+					lastActivity = lastCommit
+				}
+			}
+		}
+
+		// Fallback to issue UpdatedAt if history missing
+		if lastActivity.IsZero() {
+			lastActivity = issue.UpdatedAt
+		}
+
+		if lastActivity.Before(threshold) {
+			staleCount++
+			days := int(now.Sub(lastActivity).Hours() / 24)
+			if days > maxDays {
+				maxDays = days
+				stalestID = issue.ID
+			}
+		}
+	}
+
+	if staleCount == 0 {
+		return nil
+	}
+
+	return &Staleness{
+		StaleCount:       staleCount,
+		StalestIssueID:   stalestID,
+		StalestIssueDays: maxDays,
+		ThresholdDays:    thresholdDays,
 	}
 }
 
