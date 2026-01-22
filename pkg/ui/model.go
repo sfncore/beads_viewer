@@ -1283,6 +1283,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Generate triage for priority panel (bv-91) - reuse existing analyzer/stats (bv-runn.12)
 		triage := analysis.ComputeTriageFromAnalyzer(m.analyzer, m.analysis, m.issues, analysis.TriageOptions{}, time.Now())
+		triageScores := make(map[string]float64, len(triage.Recommendations))
+		triageReasons := make(map[string]analysis.TriageReasons, len(triage.Recommendations))
+		quickWinSet := make(map[string]bool, len(triage.QuickWins))
+		blockerSet := make(map[string]bool, len(triage.BlockersToClear))
+		unblocksMap := make(map[string][]string, len(triage.Recommendations))
+
+		for _, rec := range triage.Recommendations {
+			triageScores[rec.ID] = rec.Score
+			if len(rec.Reasons) > 0 {
+				triageReasons[rec.ID] = analysis.TriageReasons{
+					Primary:    rec.Reasons[0],
+					All:        rec.Reasons,
+					ActionHint: rec.Action,
+				}
+			}
+			unblocksMap[rec.ID] = rec.UnblocksIDs
+		}
+		for _, qw := range triage.QuickWins {
+			quickWinSet[qw.ID] = true
+		}
+		for _, bl := range triage.BlockersToClear {
+			blockerSet[bl.ID] = true
+		}
+
+		m.triageScores = triageScores
+		m.triageReasons = triageReasons
+		m.quickWinSet = quickWinSet
+		m.blockerSet = blockerSet
+		m.unblocksMap = unblocksMap
+
 		m.insightsPanel.SetTopPicks(triage.QuickRef.TopPicks)
 
 		// Set full recommendations with breakdown for priority radar (bv-93)
@@ -1356,6 +1386,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Otherwise, update list respecting current filter (open/ready/etc.)
 		if m.activeRecipe != nil {
 			m.applyRecipe(m.activeRecipe)
+		} else if m.currentFilter == "" || m.currentFilter == "all" {
+			m.refreshListItemsPhase2()
 		} else {
 			m.applyFilter()
 		}
@@ -1477,11 +1509,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.countReady = msg.Snapshot.CountReady
 		m.countBlocked = msg.Snapshot.CountBlocked
 		m.countClosed = msg.Snapshot.CountClosed
-		m.triageScores = msg.Snapshot.TriageScores
-		m.triageReasons = msg.Snapshot.TriageReasons
-		m.unblocksMap = msg.Snapshot.UnblocksMap
-		m.quickWinSet = msg.Snapshot.QuickWinSet
-		m.blockerSet = msg.Snapshot.BlockerSet
+		// Preserve existing triage data unless the snapshot has Phase 2 results.
+		// Avoid flicker when Phase 1 snapshots arrive without triage data.
+		if msg.Snapshot.Phase2Ready || len(msg.Snapshot.TriageScores) > 0 {
+			m.triageScores = msg.Snapshot.TriageScores
+			m.triageReasons = msg.Snapshot.TriageReasons
+			m.unblocksMap = msg.Snapshot.UnblocksMap
+			m.quickWinSet = msg.Snapshot.QuickWinSet
+			m.blockerSet = msg.Snapshot.BlockerSet
+		}
 
 		// Clear caches that need recomputation
 		m.labelHealthCached = false
@@ -1867,15 +1903,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dismissedAlerts = make(map[string]bool)
 		m.showAlertsPanel = false
 
-		// Rebuild list items
+		// Rebuild list items (preserve triage data to avoid flicker)
 		items := make([]list.Item, len(m.issues))
 		for i := range m.issues {
-			items[i] = IssueItem{
+			item := IssueItem{
 				Issue:      m.issues[i],
 				GraphScore: m.analysis.GetPageRankScore(m.issues[i].ID),
 				Impact:     m.analysis.GetCriticalPathScore(m.issues[i].ID),
 				RepoPrefix: ExtractRepoPrefix(m.issues[i].ID),
 			}
+			item.TriageScore = m.triageScores[m.issues[i].ID]
+			if reasons, exists := m.triageReasons[m.issues[i].ID]; exists {
+				item.TriageReason = reasons.Primary
+				item.TriageReasons = reasons.All
+			}
+			item.IsQuickWin = m.quickWinSet[m.issues[i].ID]
+			item.IsBlocker = m.blockerSet[m.issues[i].ID]
+			item.UnblocksCount = len(m.unblocksMap[m.issues[i].ID])
+			items[i] = item
 		}
 		m.updateSemanticIDs(items)
 		m.clearSemanticScores()
@@ -1902,8 +1947,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Regenerate sub-views (with Phase 1 data; Phase 2 will update via Phase2ReadyMsg)
+		// Preserve triage data already computed to avoid UI flicker.
+		oldTopPicks := m.insightsPanel.topPicks
+		oldRecs := m.insightsPanel.recommendations
+		oldRecMap := m.insightsPanel.recommendationMap
+		oldHash := m.insightsPanel.triageDataHash
+
 		ins := m.analysis.GenerateInsights(len(m.issues))
 		m.insightsPanel = NewInsightsModel(ins, m.issueMap, m.theme)
+		m.insightsPanel.topPicks = oldTopPicks
+		m.insightsPanel.recommendations = oldRecs
+		m.insightsPanel.recommendationMap = oldRecMap
+		m.insightsPanel.triageDataHash = oldHash
 		bodyHeight := m.height - 1
 		if bodyHeight < 5 {
 			bodyHeight = 5
@@ -5936,6 +5991,46 @@ func (m *Model) applyFilter() {
 	// Keep selection in bounds
 	if len(filteredItems) > 0 && m.list.Index() >= len(filteredItems) {
 		m.list.Select(0)
+	}
+	m.updateViewportContent()
+}
+
+// refreshListItemsPhase2 updates visible items with Phase 2 scores and triage data
+// without rebuilding the filtered set.
+func (m *Model) refreshListItemsPhase2() {
+	items := m.list.Items()
+	if len(items) == 0 {
+		return
+	}
+
+	selectedIdx := m.list.Index()
+	for i := range items {
+		item, ok := items[i].(IssueItem)
+		if !ok {
+			continue
+		}
+		issueID := item.Issue.ID
+		if m.analysis != nil {
+			item.GraphScore = m.analysis.GetPageRankScore(issueID)
+			item.Impact = m.analysis.GetCriticalPathScore(issueID)
+		}
+		item.TriageScore = m.triageScores[issueID]
+		if reasons, exists := m.triageReasons[issueID]; exists {
+			item.TriageReason = reasons.Primary
+			item.TriageReasons = reasons.All
+		} else {
+			item.TriageReason = ""
+			item.TriageReasons = nil
+		}
+		item.IsQuickWin = m.quickWinSet[issueID]
+		item.IsBlocker = m.blockerSet[issueID]
+		item.UnblocksCount = len(m.unblocksMap[issueID])
+		items[i] = item
+	}
+
+	m.list.SetItems(items)
+	if selectedIdx >= 0 && selectedIdx < len(items) {
+		m.list.Select(selectedIdx)
 	}
 	m.updateViewportContent()
 }
