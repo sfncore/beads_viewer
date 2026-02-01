@@ -2956,6 +2956,7 @@
       <!-- Detail Pane - Bottom sheet on mobile (60% height), side panel on desktop -->
       <!-- Mobile: swipe down to dismiss; Desktop: swipe right to dismiss -->
       <div x-show="graphDetailNode"
+           style="display: none"
            x-data="{ touchStartY: 0, touchStartX: 0, touchCurrentY: 0, touchCurrentX: 0, swiping: false, isMobile: window.innerWidth < 768 }"
            x-init="window.addEventListener('resize', () => isMobile = window.innerWidth < 768)"
            x-transition:enter="transition ease-out duration-300"
