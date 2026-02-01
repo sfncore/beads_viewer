@@ -301,6 +301,11 @@ func InitAndPush(bundlePath string, repoFullName string, forceOverwrite bool) er
 		}
 	}
 
+	// Configure git for large pushes (prevents HTTP 408 timeouts)
+	configCmd := exec.Command("git", "config", "http.postBuffer", "524288000") // 500MB
+	configCmd.Dir = bundlePath
+	_ = configCmd.Run() // Ignore errors - this is best-effort
+
 	// Push with force-with-lease for safety
 	fmt.Println("  -> Pushing to GitHub...")
 	pushArgs := []string{"push", "-u", "origin", "main"}
