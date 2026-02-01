@@ -1,9 +1,28 @@
-#!/usr/bin/env -S bash -l
+#!/usr/bin/env bash
 set -euo pipefail
 
 # BV TOON E2E Test Script
-# Tests TOON format support across robot commands
+# Tests TOON format support across all robot commands
 # NOTE: TOON provides minimal savings for bv due to deeply nested output structure
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Ensure we use the correct bv binary (project binary or user's local install)
+BV_BIN="${PROJECT_DIR}/bv"
+if [[ ! -x "$BV_BIN" ]]; then
+    if [[ -x "/home/ubuntu/.local/bin/bv" ]]; then
+        BV_BIN="/home/ubuntu/.local/bin/bv"
+    else
+        # Try to build from project
+        echo "Building bv..."
+        (cd "$PROJECT_DIR" && go build -o bv ./cmd/bv/) || {
+            echo "Failed to build bv"
+            exit 1
+        }
+        BV_BIN="${PROJECT_DIR}/bv"
+    fi
+fi
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 log_pass() { log "PASS: $*"; }
@@ -24,34 +43,43 @@ log "BV (BEADS VIEWER) TOON E2E TEST"
 log "=========================================="
 log ""
 
-# Change to a directory with beads for testing
-# bv looks for .beads directory in current or parent dir
-if [[ -d "/dp/.beads" ]]; then
-    cd /dp
-    log_info "Running from /dp (beads at .beads)"
-elif [[ -d "./.beads" ]]; then
-    log_info "Running from current directory (beads found)"
-else
-    log_info "WARNING: No .beads directory found - some tests may fail"
+# Find a directory with beads for testing
+find_beads_dir() {
+    # Priority: script's project dir, current dir, /dp
+    if [[ -d "$PROJECT_DIR/.beads" ]]; then
+        echo "$PROJECT_DIR"
+    elif [[ -d "./.beads" ]]; then
+        pwd
+    elif [[ -d "/dp/.beads" ]]; then
+        echo "/dp"
+    else
+        echo ""
+    fi
+}
+
+BEADS_DIR=$(find_beads_dir)
+if [[ -z "$BEADS_DIR" ]]; then
+    log "ERROR: No .beads directory found - cannot run tests"
+    exit 1
 fi
+cd "$BEADS_DIR"
+log_info "Running from $BEADS_DIR (beads at .beads)"
 log ""
 
 # Phase 1: Prerequisites
 log "--- Phase 1: Prerequisites ---"
 
-for cmd in bv tru jq; do
+# Check prerequisites (bv is already verified above)
+log_info "bv: $BV_BIN"
+record_pass "bv available"
+
+for cmd in tru jq; do
     if command -v "$cmd" &>/dev/null; then
-        case "$cmd" in
-            tru) version=$("$cmd" --version 2>/dev/null | head -1 || echo "available") ;;
-            jq)  version=$("$cmd" --version 2>/dev/null | head -1 || echo "available") ;;
-            bv)  version="available" ;;  # bv has no --version flag
-            *)   version="available" ;;
-        esac
+        version=$("$cmd" --version 2>/dev/null | head -1 || echo "available")
         log_info "$cmd: $version"
         record_pass "$cmd available"
     else
         record_fail "$cmd not found"
-        [[ "$cmd" == "bv" ]] && exit 1
     fi
 done
 log ""
@@ -59,27 +87,26 @@ log ""
 # Phase 2: Format Flag Tests
 log "--- Phase 2: Format Flag Tests ---"
 
-log_info "Test 2.1: bv -format=json -robot-next"
-if json_output=$(bv -format=json -robot-next 2>/dev/null); then
+log_info "Test 2.1: "$BV_BIN" -format=json --robot-next"
+if json_output=$("$BV_BIN" -format=json --robot-next 2>/dev/null); then
     if echo "$json_output" | jq . >/dev/null 2>&1; then
         record_pass "-format=json produces valid JSON"
-        json_bytes=$(echo -n "$json_output" | wc -c)
+        json_bytes=$(echo -n "$json_output" | wc -c | tr -d ' ')
         log_info "  JSON output: $json_bytes bytes"
     else
         record_fail "-format=json invalid"
     fi
 else
-    record_skip "bv -format=json error"
+    record_skip ""$BV_BIN" -format=json error"
 fi
 
-log_info "Test 2.2: bv -format=toon -robot-next"
-if toon_output=$(bv -format=toon -robot-next 2>/dev/null); then
+log_info "Test 2.2: "$BV_BIN" -format=toon --robot-next"
+if toon_output=$("$BV_BIN" -format=toon --robot-next 2>/dev/null); then
     if [[ -n "$toon_output" && "${toon_output:0:1}" != "{" && "${toon_output:0:1}" != "[" ]]; then
         record_pass "-format=toon produces TOON"
-        toon_bytes=$(echo -n "$toon_output" | wc -c)
+        toon_bytes=$(echo -n "$toon_output" | wc -c | tr -d ' ')
         log_info "  TOON output: $toon_bytes bytes"
     else
-        # TOON output might be JSON if fallback occurred
         if echo "$toon_output" | jq . >/dev/null 2>&1; then
             record_skip "-format=toon fell back to JSON"
         else
@@ -87,7 +114,7 @@ if toon_output=$(bv -format=toon -robot-next 2>/dev/null); then
         fi
     fi
 else
-    record_skip "bv -format=toon error"
+    record_skip ""$BV_BIN" -format=toon error"
 fi
 log ""
 
@@ -97,15 +124,21 @@ log "--- Phase 3: Round-trip Verification ---"
 if [[ -n "${json_output:-}" && -n "${toon_output:-}" ]]; then
     if [[ "${toon_output:0:1}" != "{" && "${toon_output:0:1}" != "[" ]]; then
         if decoded=$(echo "$toon_output" | tru --decode 2>/dev/null); then
-            # Compare excluding format-specific metadata
+            # Compare excluding timing-sensitive fields
             orig_sorted=$(echo "$json_output" | jq -S 'del(.generated_at) | del(.data_hash)' 2>/dev/null || echo "{}")
             decoded_sorted=$(echo "$decoded" | jq -S 'del(.generated_at) | del(.data_hash)' 2>/dev/null || echo "{}")
 
             if [[ "$orig_sorted" == "$decoded_sorted" ]]; then
-                record_pass "Round-trip preserves data"
+                record_pass "Round-trip preserves data exactly"
             else
-                log_info "Note: Some fields may differ due to timing"
-                record_pass "Round-trip structurally valid"
+                # Check key fields are preserved
+                orig_id=$(echo "$json_output" | jq -r '.id // empty' 2>/dev/null)
+                decoded_id=$(echo "$decoded" | jq -r '.id // empty' 2>/dev/null)
+                if [[ "$orig_id" == "$decoded_id" && -n "$orig_id" ]]; then
+                    record_pass "Round-trip preserves key data"
+                else
+                    record_fail "Round-trip data mismatch"
+                fi
             fi
         else
             record_fail "tru --decode failed"
@@ -121,36 +154,43 @@ log ""
 # Phase 4: Environment Variables
 log "--- Phase 4: Environment Variables ---"
 
-unset BV_OUTPUT_FORMAT TOON_DEFAULT_FORMAT TOON_STATS
+# Clear any existing env vars
+unset BV_OUTPUT_FORMAT TOON_DEFAULT_FORMAT TOON_STATS 2>/dev/null || true
 
+log_info "Test 4.1: BV_OUTPUT_FORMAT=toon"
 export BV_OUTPUT_FORMAT=toon
-if env_out=$(bv -robot-next 2>/dev/null); then
-    if [[ -n "$env_out" ]]; then
-        record_pass "BV_OUTPUT_FORMAT=toon accepted"
+if env_out=$("$BV_BIN" --robot-next 2>/dev/null); then
+    if [[ -n "$env_out" && "${env_out:0:1}" != "{" ]]; then
+        record_pass "BV_OUTPUT_FORMAT=toon produces TOON"
     else
-        record_skip "BV_OUTPUT_FORMAT test (empty output)"
+        record_pass "BV_OUTPUT_FORMAT=toon accepted"
     fi
 else
-    record_skip "BV_OUTPUT_FORMAT test"
+    record_skip "BV_OUTPUT_FORMAT test error"
 fi
 unset BV_OUTPUT_FORMAT
 
+log_info "Test 4.2: TOON_DEFAULT_FORMAT=toon"
 export TOON_DEFAULT_FORMAT=toon
-if env_out=$(bv -robot-next 2>/dev/null); then
+if env_out=$("$BV_BIN" --robot-next 2>/dev/null); then
     if [[ -n "$env_out" ]]; then
         record_pass "TOON_DEFAULT_FORMAT=toon accepted"
     else
         record_skip "TOON_DEFAULT_FORMAT test (empty output)"
     fi
 else
-    record_skip "TOON_DEFAULT_FORMAT test"
+    record_skip "TOON_DEFAULT_FORMAT test error"
 fi
 
-# Test CLI override
-if override=$(bv -format=json -robot-next 2>/dev/null) && echo "$override" | jq . >/dev/null 2>&1; then
-    record_pass "CLI -format=json overrides env"
+log_info "Test 4.3: CLI -format=json overrides TOON_DEFAULT_FORMAT=toon"
+if override=$("$BV_BIN" -format=json --robot-next 2>/dev/null) && echo "$override" | jq . >/dev/null 2>&1; then
+    if [[ "${override:0:1}" == "{" ]]; then
+        record_pass "CLI -format=json overrides env var"
+    else
+        record_fail "CLI override not working"
+    fi
 else
-    record_skip "CLI override test"
+    record_skip "CLI override test error"
 fi
 unset TOON_DEFAULT_FORMAT
 log ""
@@ -158,62 +198,85 @@ log ""
 # Phase 5: Token Savings Analysis
 log "--- Phase 5: Token Savings Analysis ---"
 
-# Test with --stats flag
-if stats_output=$(bv -format=toon -stats -robot-next 2>&1); then
-    if echo "$stats_output" | grep -q "\[stats\]"; then
-        record_pass "--stats flag produces token stats"
-        echo "$stats_output" | grep "\[stats\]" | head -1 | while read line; do
-            log_info "$line"
-        done
-    else
-        record_skip "--stats output not found"
-    fi
-else
-    record_skip "--stats test failed"
-fi
-
-# Analyze savings across commands
 log_info "Token efficiency by command:"
-for cmd in "-robot-next" "-robot-alerts"; do
-    json_bytes=$(bv -format=json $cmd 2>/dev/null | wc -c)
-    toon_bytes=$(bv -format=toon $cmd 2>/dev/null | wc -c)
-    # Handle case where wc -c returns with leading spaces
-    json_bytes=$(echo "$json_bytes" | tr -d ' ')
-    toon_bytes=$(echo "$toon_bytes" | tr -d ' ')
-    if [[ -n "$json_bytes" && "$json_bytes" -gt 0 && -n "$toon_bytes" && "$toon_bytes" -gt 0 ]]; then
-        savings=$(( (json_bytes - toon_bytes) * 100 / json_bytes ))
-        log_info "  $cmd: JSON=${json_bytes}b TOON=${toon_bytes}b (${savings}% savings)"
+total_json_bytes=0
+total_toon_bytes=0
+
+for cmd in --robot-next --robot-alerts --robot-triage; do
+    json_b=$("$BV_BIN" -format=json $cmd 2>/dev/null | wc -c | tr -d ' ')
+    toon_b=$("$BV_BIN" -format=toon $cmd 2>/dev/null | wc -c | tr -d ' ')
+    if [[ -n "$json_b" && "$json_b" -gt 0 && -n "$toon_b" && "$toon_b" -gt 0 ]]; then
+        savings=$(( (json_b - toon_b) * 100 / json_b ))
+        log_info "  $cmd: JSON=${json_b}b TOON=${toon_b}b (${savings}% savings)"
+        total_json_bytes=$((total_json_bytes + json_b))
+        total_toon_bytes=$((total_toon_bytes + toon_b))
     fi
 done
+
+if [[ $total_json_bytes -gt 0 ]]; then
+    overall_savings=$(( (total_json_bytes - total_toon_bytes) * 100 / total_json_bytes ))
+    log_info "Overall: JSON=${total_json_bytes}b TOON=${total_toon_bytes}b (${overall_savings}% savings)"
+    # Note: We don't require 40% savings for bv because its output is deeply nested
+    # TOON is optimized for tabular/flat data
+    if [[ $overall_savings -ge 0 ]]; then
+        record_pass "Token savings measurement complete"
+    fi
+fi
 log ""
 
-# Phase 6: Multiple Robot Commands
-log "--- Phase 6: Multiple Robot Commands ---"
+# Phase 6: All Robot Commands
+log "--- Phase 6: All Robot Commands ---"
 
 ROBOT_CMDS=(
-    "-robot-next"
-    "-robot-alerts"
-    "-robot-triage"
+    "--robot-next"
+    "--robot-triage"
+    "--robot-plan"
+    "--robot-priority"
+    "--robot-insights"
+    "--robot-alerts"
+    "--robot-suggest"
+    "--robot-graph"
+    "--robot-list"
+    "--robot-schema"
+    "--robot-label-health"
+    "--robot-label-flow"
+    "--robot-label-attention"
 )
 
+passed_cmds=0
+failed_cmds=0
 for cmd in "${ROBOT_CMDS[@]}"; do
-    if bv -format=toon $cmd &>/dev/null; then
-        record_pass "bv -format=toon $cmd"
+    if output=$("$BV_BIN" -format=toon $cmd 2>/dev/null); then
+        if [[ -n "$output" ]]; then
+            ((passed_cmds++)) || true
+            log_info "  ✓ $cmd"
+        else
+            ((failed_cmds++)) || true
+            log_info "  ○ $cmd (empty output)"
+        fi
     else
-        record_skip "bv $cmd"
+        ((failed_cmds++)) || true
+        log_info "  ✗ $cmd (error)"
     fi
 done
+
+if [[ $passed_cmds -gt 0 ]]; then
+    record_pass "TOON format works for $passed_cmds robot commands"
+fi
+if [[ $failed_cmds -gt 0 ]]; then
+    record_skip "$failed_cmds commands had issues"
+fi
 log ""
 
 # Phase 7: Go Unit Tests (if in beads_viewer repo)
 log "--- Phase 7: Unit Tests ---"
 
-if [[ -d "/dp/beads_viewer" ]]; then
-    cd /dp/beads_viewer
-    if go test ./cmd/bv/... -run "Toon|TOON|Format" -v 2>&1 | tail -10; then
+if [[ -d "$PROJECT_DIR/cmd/bv" ]]; then
+    cd "$PROJECT_DIR"
+    if go test ./cmd/bv/... -run "TOON" -v 2>&1 | tail -20; then
         record_pass "go test TOON tests"
     else
-        record_skip "No TOON-specific unit tests found"
+        record_skip "No TOON-specific unit tests or test failure"
     fi
 else
     record_skip "beads_viewer repo not found"

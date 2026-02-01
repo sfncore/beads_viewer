@@ -2,6 +2,7 @@ package datasource
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -326,19 +327,21 @@ func parseJSONStringArray(s string) []string {
 		return nil
 	}
 
-	// Simple parser for ["a", "b", "c"] format
-	s = strings.TrimPrefix(s, "[")
-	s = strings.TrimSuffix(s, "]")
-	if s == "" {
-		return nil
-	}
-
+	// Use proper JSON unmarshaling to handle edge cases like commas in labels
 	var result []string
-	for _, item := range strings.Split(s, ",") {
-		item = strings.TrimSpace(item)
-		item = strings.Trim(item, `"`)
-		if item != "" {
-			result = append(result, item)
+	if err := json.Unmarshal([]byte(s), &result); err != nil {
+		// Fallback to simple parser for malformed JSON
+		s = strings.TrimPrefix(s, "[")
+		s = strings.TrimSuffix(s, "]")
+		if s == "" {
+			return nil
+		}
+		for _, item := range strings.Split(s, ",") {
+			item = strings.TrimSpace(item)
+			item = strings.Trim(item, `"`)
+			if item != "" {
+				result = append(result, item)
+			}
 		}
 	}
 	return result

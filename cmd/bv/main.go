@@ -2022,10 +2022,9 @@ func main() {
 		driftResult.Alerts = filtered
 
 		output := struct {
-			GeneratedAt string        `json:"generated_at"`
-			DataHash    string        `json:"data_hash"`
-			Alerts      []drift.Alert `json:"alerts"`
-			Summary     struct {
+			RobotEnvelope
+			Alerts  []drift.Alert `json:"alerts"`
+			Summary struct {
 				Total    int `json:"total"`
 				Critical int `json:"critical"`
 				Warning  int `json:"warning"`
@@ -2033,9 +2032,8 @@ func main() {
 			} `json:"summary"`
 			UsageHints []string `json:"usage_hints"`
 		}{
-			GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-			DataHash:    dataHash,
-			Alerts:      driftResult.Alerts,
+			RobotEnvelope: NewRobotEnvelope(dataHash),
+			Alerts:        driftResult.Alerts,
 			UsageHints: []string{
 				"--severity=warning --alert-type=stale_issue   # stale warnings only",
 				"--alert-type=blocking_cascade                 # high-unblock opportunities",
@@ -2709,19 +2707,18 @@ func main() {
 
 		if *robotNext {
 			// Minimal output: just the top pick
+			envelope := NewRobotEnvelope(dataHash)
 			if len(triage.QuickRef.TopPicks) == 0 {
 				output := struct {
-					GeneratedAt string `json:"generated_at"`
-					DataHash    string `json:"data_hash"`
-					AsOf        string `json:"as_of,omitempty"`
-					AsOfCommit  string `json:"as_of_commit,omitempty"`
-					Message     string `json:"message"`
+					RobotEnvelope
+					AsOf       string `json:"as_of,omitempty"`
+					AsOfCommit string `json:"as_of_commit,omitempty"`
+					Message    string `json:"message"`
 				}{
-					GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-					DataHash:    dataHash,
-					AsOf:        *asOf,
-					AsOfCommit:  asOfResolved,
-					Message:     "No actionable items available",
+					RobotEnvelope: envelope,
+					AsOf:          *asOf,
+					AsOfCommit:    asOfResolved,
+					Message:       "No actionable items available",
 				}
 				encoder := newRobotEncoder(os.Stdout)
 				if err := encoder.Encode(output); err != nil {
@@ -2733,29 +2730,27 @@ func main() {
 
 			top := triage.QuickRef.TopPicks[0]
 			output := struct {
-				GeneratedAt string   `json:"generated_at"`
-				DataHash    string   `json:"data_hash"`
-				AsOf        string   `json:"as_of,omitempty"`
-				AsOfCommit  string   `json:"as_of_commit,omitempty"`
-				ID          string   `json:"id"`
-				Title       string   `json:"title"`
-				Score       float64  `json:"score"`
-				Reasons     []string `json:"reasons"`
-				Unblocks    int      `json:"unblocks"`
-				ClaimCmd    string   `json:"claim_command"`
-				ShowCmd     string   `json:"show_command"`
+				RobotEnvelope
+				AsOf       string   `json:"as_of,omitempty"`
+				AsOfCommit string   `json:"as_of_commit,omitempty"`
+				ID         string   `json:"id"`
+				Title      string   `json:"title"`
+				Score      float64  `json:"score"`
+				Reasons    []string `json:"reasons"`
+				Unblocks   int      `json:"unblocks"`
+				ClaimCmd   string   `json:"claim_command"`
+				ShowCmd    string   `json:"show_command"`
 			}{
-				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-				DataHash:    dataHash,
-				AsOf:        *asOf,
-				AsOfCommit:  asOfResolved,
-				ID:          top.ID,
-				Title:       top.Title,
-				Score:       top.Score,
-				Reasons:     top.Reasons,
-				Unblocks:    top.Unblocks,
-				ClaimCmd:    fmt.Sprintf("bd update %s --status=in_progress", top.ID),
-				ShowCmd:     fmt.Sprintf("bd show %s", top.ID),
+				RobotEnvelope: envelope,
+				AsOf:          *asOf,
+				AsOfCommit:    asOfResolved,
+				ID:            top.ID,
+				Title:         top.Title,
+				Score:         top.Score,
+				Reasons:       top.Reasons,
+				Unblocks:      top.Unblocks,
+				ClaimCmd:      fmt.Sprintf("bd update %s --status=in_progress", top.ID),
+				ShowCmd:       fmt.Sprintf("bd show %s", top.ID),
 			}
 
 			encoder := newRobotEncoder(os.Stdout)
@@ -6732,6 +6727,34 @@ func generateHistoryForExport(issues []model.Issue) (*TimeTravelHistory, error) 
 var robotOutputFormat = "json"
 var robotToonEncodeOptions = toon.DefaultEncodeOptions()
 var robotShowToonStats bool
+
+// RobotEnvelope is the standard envelope for all robot command outputs.
+// All robot outputs MUST include these fields for consistency.
+type RobotEnvelope struct {
+	GeneratedAt  string `json:"generated_at"`            // RFC3339 timestamp
+	DataHash     string `json:"data_hash"`               // Fingerprint of source data
+	OutputFormat string `json:"output_format,omitempty"` // "json" or "toon"
+	Version      string `json:"version,omitempty"`       // bv version (e.g., "1.0.0")
+}
+
+// RobotMeta contains optional timing and computation metadata.
+// Commands that perform async/phased analysis should include this.
+type RobotMeta struct {
+	Phase2Ready bool              `json:"phase2_ready,omitempty"` // True if all async metrics computed
+	Timings     map[string]string `json:"timings,omitempty"`      // Per-metric timing info
+	CacheHit    bool              `json:"cache_hit,omitempty"`    // True if results from cache
+	IssueCount  int               `json:"issue_count,omitempty"`  // Number of issues analyzed
+}
+
+// NewRobotEnvelope creates a standard envelope for robot output.
+func NewRobotEnvelope(dataHash string) RobotEnvelope {
+	return RobotEnvelope{
+		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
+		DataHash:     dataHash,
+		OutputFormat: robotOutputFormat,
+		Version:      "1.0.0", // TODO: use actual version from pkg/version
+	}
+}
 
 type robotEncoder interface {
 	Encode(v any) error
