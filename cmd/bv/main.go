@@ -1023,6 +1023,9 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error encoding robot-docs: %v\n", err)
 			os.Exit(1)
 		}
+		if _, hasErr := docs["error"]; hasErr {
+			os.Exit(2) // Invalid arguments per documented exit codes
+		}
 		os.Exit(0)
 	}
 
@@ -6896,7 +6899,7 @@ func generateRobotDocs(topic string) map[string]interface{} {
 			"bv --robot-triage-by-track       # Parallel work streams for multi-agent coordination",
 			"bv --robot-schema                # JSON Schema definitions for all commands",
 		},
-		"data_source": ".beads/beads.jsonl (issues) and git history (correlations)",
+		"data_source": ".beads/issues.jsonl and git history (correlations)",
 		"output_modes": map[string]string{
 			"json": "Default structured output",
 			"toon": "Token-optimized notation (saves ~30-50% tokens)",
