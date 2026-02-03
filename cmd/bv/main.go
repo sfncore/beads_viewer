@@ -6222,7 +6222,7 @@ func resolvePagesSource(config *export.WizardConfig, beadsPath string) (pagesSou
 		if info, err := os.Stat(cand.BeadsDir); err != nil || !info.IsDir() {
 			continue
 		}
-		issues, err := datasource.LoadIssuesFromDir(cand.BeadsDir)
+		issues, err := loadIssuesFromBeadsDir(cand.BeadsDir)
 		if err != nil {
 			lastErr = err
 			continue
@@ -6254,7 +6254,7 @@ func isSuspiciousIssueCount(current, expected int) bool {
 		return true
 	}
 	if expected <= 0 {
-		return current <= 3
+		return false
 	}
 	threshold := expected / 5
 	if threshold < 5 {
@@ -6353,9 +6353,10 @@ func findBetterPagesSource(config *export.WizardConfig, current pagesSource, bea
 		}
 	}
 
-	if bestHintDir != "" {
+	if bestHintDir != "" && (bestDir == "" || bestHintDiff <= bestDiff) {
 		bestDir = bestHintDir
 		bestCount = bestHintCount
+		bestDiff = bestHintDiff
 	}
 
 	if bestDir == "" {
@@ -6369,7 +6370,7 @@ func findBetterPagesSource(config *export.WizardConfig, current pagesSource, bea
 		return pagesSource{}, false
 	}
 
-	issues, err := datasource.LoadIssuesFromDir(bestDir)
+	issues, err := loadIssuesFromBeadsDir(bestDir)
 	if err != nil {
 		return pagesSource{}, false
 	}
@@ -6429,6 +6430,26 @@ func discoverBeadsDirs(root string, maxDepth int) []string {
 }
 
 func countIssuesInBeadsDir(beadsDir string) (int, error) {
+	if path, typ := metadataPreferredSource(beadsDir); path != "" {
+		info, err := os.Stat(path)
+		if err == nil {
+			priority := datasource.PriorityJSONLLocal
+			if typ == datasource.SourceTypeSQLite {
+				priority = datasource.PrioritySQLite
+			}
+			source := datasource.DataSource{
+				Type:     typ,
+				Path:     path,
+				Priority: priority,
+				ModTime:  info.ModTime(),
+				Size:     info.Size(),
+			}
+			if err := datasource.ValidateSource(&source); err == nil {
+				return source.IssueCount, nil
+			}
+		}
+	}
+
 	sources, err := datasource.DiscoverSources(datasource.DiscoveryOptions{
 		BeadsDir:               beadsDir,
 		ValidateAfterDiscovery: true,
@@ -6445,6 +6466,66 @@ func countIssuesInBeadsDir(beadsDir string) (int, error) {
 		return 0, err
 	}
 	return result.Selected.IssueCount, nil
+}
+
+type beadsMetadata struct {
+	Database    string `json:"database"`
+	JSONLExport string `json:"jsonl_export"`
+}
+
+func metadataPreferredSource(beadsDir string) (string, datasource.SourceType) {
+	metaPath := filepath.Join(beadsDir, "metadata.json")
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return "", ""
+	}
+	var meta beadsMetadata
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return "", ""
+	}
+	if meta.Database != "" {
+		path := meta.Database
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(beadsDir, path)
+		}
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path, datasource.SourceTypeSQLite
+		}
+	}
+	if meta.JSONLExport != "" {
+		path := meta.JSONLExport
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(beadsDir, path)
+		}
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path, datasource.SourceTypeJSONLLocal
+		}
+	}
+	return "", ""
+}
+
+func loadIssuesFromBeadsDir(beadsDir string) ([]model.Issue, error) {
+	if path, typ := metadataPreferredSource(beadsDir); path != "" {
+		switch typ {
+		case datasource.SourceTypeSQLite:
+			reader, err := datasource.NewSQLiteReader(datasource.DataSource{
+				Type: datasource.SourceTypeSQLite,
+				Path: path,
+			})
+			if err != nil {
+				break
+			}
+			defer reader.Close()
+			if issues, err := reader.LoadIssues(); err == nil {
+				return issues, nil
+			}
+		case datasource.SourceTypeJSONLLocal:
+			if issues, err := loader.LoadIssuesFromFile(path); err == nil {
+				return issues, nil
+			}
+		}
+	}
+	return datasource.LoadIssuesFromDir(beadsDir)
 }
 
 func absInt(v int) int {
