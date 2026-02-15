@@ -24,6 +24,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/search"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/triage"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/updater"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/watcher"
 
@@ -66,8 +67,9 @@ const (
 	focusAgentPrompt // AGENTS.md integration prompt (bv-i8dk)
 	focusFlowMatrix  // Cross-label flow matrix view
 	focusTutorial    // Interactive tutorial (bv-8y31)
-	focusCassModal   // Cass session preview modal (bv-5bqh)
-	focusUpdateModal // Self-update modal (bv-182)
+	focusCassModal      // Cass session preview modal (bv-5bqh)
+	focusUpdateModal    // Self-update modal (bv-182)
+	focusTriageDiff     // Triage diff review modal
 )
 
 // SortMode represents the current list sorting mode (bv-3ita)
@@ -502,6 +504,10 @@ type Model struct {
 	// Self-update modal (bv-182)
 	showUpdateModal bool
 	updateModal     UpdateModal
+
+	// Triage diff review modal
+	showTriageDiff bool
+	triageDiffModal TriageDiffModal
 }
 
 // labelCount is a simple label->count pair for display
@@ -1139,6 +1145,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showUpdateModal {
 			m.updateModal, cmd = m.updateModal.Update(msg)
 			cmds = append(cmds, cmd)
+		}
+
+	case TriageDiffLoadedMsg:
+		if msg.Err != nil {
+			// Could show error in status bar; for now just ignore
+		} else if msg.Branch != nil {
+			m.triageDiffModal = NewTriageDiffModal(msg.Branch, msg.Diffs, m.theme)
+			m.triageDiffModal.SetSize(m.width, m.height)
+			m.showTriageDiff = true
+			m.focused = focusTriageDiff
 		}
 
 	case ReadyTimeoutMsg:
@@ -2293,6 +2309,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Quick cancel
 				if m.updateModal.IsConfirming() {
 					m.showUpdateModal = false
+					m.focused = focusList
+					return m, tea.Batch(cmds...)
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
+
+		// Handle triage diff modal
+		if m.showTriageDiff {
+			m.triageDiffModal, cmd = m.triageDiffModal.Update(msg)
+			cmds = append(cmds, cmd)
+
+			switch msg.String() {
+			case "esc", "q":
+				m.showTriageDiff = false
+				m.focused = focusList
+				return m, tea.Batch(cmds...)
+			case "Y", "y":
+				if m.triageDiffModal.IsAccepted() {
+					m.showTriageDiff = false
+					m.focused = focusList
+					return m, tea.Batch(cmds...)
+				}
+			case "N", "n":
+				if m.triageDiffModal.IsRejected() {
+					m.showTriageDiff = false
 					m.focused = focusList
 					return m, tea.Batch(cmds...)
 				}
@@ -4453,6 +4495,8 @@ func (m Model) View() string {
 	} else if m.showUpdateModal {
 		// Self-update modal (bv-182)
 		body = m.updateModal.CenterModal(m.width, m.height-1)
+	} else if m.showTriageDiff {
+		body = m.triageDiffModal.CenterModal(m.width, m.height-1)
 	} else if m.showLabelHealthDetail && m.labelHealthDetail != nil {
 		body = m.renderLabelHealthDetail(*m.labelHealthDetail)
 	} else if m.showLabelGraphAnalysis && m.labelGraphAnalysisResult != nil {
@@ -7176,6 +7220,8 @@ func (m Model) FocusState() string {
 		return "cass_modal"
 	case focusUpdateModal:
 		return "update_modal"
+	case focusTriageDiff:
+		return "triage_diff"
 	default:
 		return "unknown"
 	}
@@ -7411,6 +7457,15 @@ func (m *Model) showSelfUpdateModal() {
 	m.updateModal.SetSize(m.width, m.height)
 	m.showUpdateModal = true
 	m.focused = focusUpdateModal
+}
+
+// ShowTriageDiff opens the triage diff modal with preloaded data.
+// Called from outside (e.g. main.go) when triage results are ready.
+func (m *Model) ShowTriageDiff(branch *triage.TriageBranch, diffs []triage.DiffEntry) {
+	m.triageDiffModal = NewTriageDiffModal(branch, diffs, m.theme)
+	m.triageDiffModal.SetSize(m.width, m.height)
+	m.showTriageDiff = true
+	m.focused = focusTriageDiff
 }
 
 // getCassSessionCount returns the cached session count for the selected bead (bv-y836)
