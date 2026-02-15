@@ -33,6 +33,7 @@ type AggregateLoader struct {
 	config        *Config
 	workspaceRoot string
 	logger        *log.Logger
+	doltConfig    *loader.DoltConfig // If set, prefer Dolt SQL over JSONL
 }
 
 // NewAggregateLoader creates a new aggregate loader for the given workspace config
@@ -50,6 +51,11 @@ func NewAggregateLoader(config *Config, workspaceRoot string) *AggregateLoader {
 // SetLogger sets a custom logger for error reporting
 func (l *AggregateLoader) SetLogger(logger *log.Logger) {
 	l.logger = logger
+}
+
+// SetDoltConfig enables Dolt SQL loading for repos that have DoltDatabase set.
+func (l *AggregateLoader) SetDoltConfig(config *loader.DoltConfig) {
+	l.doltConfig = config
 }
 
 // LoadAll loads issues from all enabled repositories in the workspace.
@@ -145,23 +151,20 @@ func (l *AggregateLoader) loadReposParallel(ctx context.Context, repos []RepoCon
 	return results, nil
 }
 
-// loadSingleRepo loads issues from a single repository and namespaced them
+// loadSingleRepo loads issues from a single repository and namespaces them.
+// If Dolt is configured and the repo has a DoltDatabase, queries Dolt SQL directly.
+// Otherwise, falls back to loading from JSONL files.
 func (l *AggregateLoader) loadSingleRepo(repo RepoConfig) ([]model.Issue, error) {
-	// Resolve the repo path relative to workspace root
-	repoPath := repo.Path
-	if !filepath.IsAbs(repoPath) {
-		repoPath = filepath.Join(l.workspaceRoot, repoPath)
-	}
+	var issues []model.Issue
+	var err error
 
-	// Load raw issues from the repo, respecting custom beads path if provided
-	beadsDir := filepath.Join(repoPath, repo.GetBeadsPath())
-	jsonlPath, err := loader.FindJSONLPath(beadsDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load issues from %s: %w", repo.GetName(), err)
+	if l.doltConfig != nil && repo.DoltDatabase != "" {
+		issues, err = l.loadFromDolt(repo)
+	} else {
+		issues, err = l.loadFromJSONL(repo)
 	}
-	issues, err := loader.LoadIssuesFromFile(jsonlPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load issues from %s: %w", repo.GetName(), err)
+		return nil, err
 	}
 
 	// Build map of local IDs for conflict resolution
@@ -175,6 +178,35 @@ func (l *AggregateLoader) loadSingleRepo(repo RepoConfig) ([]model.Issue, error)
 	namespacedIssues := l.namespaceIssues(issues, prefix, localIDs)
 
 	return namespacedIssues, nil
+}
+
+// loadFromDolt loads issues directly from Dolt SQL server.
+func (l *AggregateLoader) loadFromDolt(repo RepoConfig) ([]model.Issue, error) {
+	ctx := context.Background()
+	issues, err := loader.LoadIssuesFromDolt(ctx, *l.doltConfig, repo.DoltDatabase)
+	if err != nil {
+		return nil, fmt.Errorf("dolt load %s (%s): %w", repo.GetName(), repo.DoltDatabase, err)
+	}
+	return issues, nil
+}
+
+// loadFromJSONL loads issues from JSONL files on disk.
+func (l *AggregateLoader) loadFromJSONL(repo RepoConfig) ([]model.Issue, error) {
+	repoPath := repo.Path
+	if !filepath.IsAbs(repoPath) {
+		repoPath = filepath.Join(l.workspaceRoot, repoPath)
+	}
+
+	beadsDir := filepath.Join(repoPath, repo.GetBeadsPath())
+	jsonlPath, err := loader.FindJSONLPath(beadsDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load issues from %s: %w", repo.GetName(), err)
+	}
+	issues, err := loader.LoadIssuesFromFile(jsonlPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load issues from %s: %w", repo.GetName(), err)
+	}
+	return issues, nil
 }
 
 // namespaceIssues adds the prefix to all issue IDs and dependency references
@@ -236,6 +268,12 @@ func (l *AggregateLoader) logRepoError(repoName string, err error) {
 // LoadAllFromConfig is a convenience function that loads a workspace config and all its repos.
 // It auto-detects whether configPath is a workspace.yaml or a routes.jsonl file.
 func LoadAllFromConfig(ctx context.Context, configPath string) ([]model.Issue, []LoadResult, error) {
+	return LoadAllFromConfigWithDolt(ctx, configPath, nil)
+}
+
+// LoadAllFromConfigWithDolt is like LoadAllFromConfig but optionally reads from Dolt SQL
+// instead of JSONL files when a DoltConfig is provided.
+func LoadAllFromConfigWithDolt(ctx context.Context, configPath string, doltConfig *loader.DoltConfig) ([]model.Issue, []LoadResult, error) {
 	var config *Config
 	var workspaceRoot string
 	var err error
@@ -256,9 +294,12 @@ func LoadAllFromConfig(ctx context.Context, configPath string) ([]model.Issue, [
 		workspaceRoot = filepath.Dir(filepath.Dir(configPath)) // .bv/workspace.yaml -> workspace root
 	}
 
-	loader := NewAggregateLoader(config, workspaceRoot)
+	aggLoader := NewAggregateLoader(config, workspaceRoot)
+	if doltConfig != nil {
+		aggLoader.SetDoltConfig(doltConfig)
+	}
 
-	return loader.LoadAll(ctx)
+	return aggLoader.LoadAll(ctx)
 }
 
 // Summary returns a summary of load results

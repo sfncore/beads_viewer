@@ -119,6 +119,7 @@ func main() {
 	profileJSON := flag.Bool("profile-json", false, "Output profile in JSON format (use with --profile-startup)")
 	noHooks := flag.Bool("no-hooks", false, "Skip running hooks during export")
 	workspaceConfig := flag.String("workspace", "", "Load issues from workspace config file (.bv/workspace.yaml)")
+	useDolt := flag.Bool("dolt", false, "Read issues from Dolt SQL server instead of JSONL files (use with --workspace)")
 	repoFilter := flag.String("repo", "", "Filter issues by repository prefix (e.g., 'api-' or 'api')")
 	saveBaseline := flag.String("save-baseline", "", "Save current metrics as baseline with optional description")
 	baselineInfo := flag.Bool("baseline-info", false, "Show information about the current baseline")
@@ -1285,6 +1286,11 @@ func main() {
 
 	// Load issues from current directory or workspace (with timing for profile)
 	loadStart := time.Now()
+	var doltCfg *loader.DoltConfig
+	if *useDolt {
+		cfg := loader.DefaultDoltConfig()
+		doltCfg = &cfg
+	}
 	var issues []model.Issue
 	var beadsPath string
 	var workspaceInfo *workspace.LoadSummary
@@ -1319,8 +1325,8 @@ func main() {
 			}
 		}
 	} else if *workspaceConfig != "" {
-		// Load from workspace configuration
-		loadedIssues, results, err := workspace.LoadAllFromConfig(context.Background(), *workspaceConfig)
+		// Load from workspace configuration (optionally via Dolt SQL)
+		loadedIssues, results, err := workspace.LoadAllFromConfigWithDolt(context.Background(), *workspaceConfig, doltCfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error loading workspace: %v\n", err)
 			os.Exit(1)
@@ -1881,7 +1887,7 @@ func main() {
 					var freshIssues []model.Issue
 					var err error
 					if *workspaceConfig != "" {
-						freshIssues, _, err = workspace.LoadAllFromConfig(context.Background(), *workspaceConfig)
+						freshIssues, _, err = workspace.LoadAllFromConfigWithDolt(context.Background(), *workspaceConfig, doltCfg)
 					} else {
 						freshIssues, err = datasource.LoadIssues("")
 					}
