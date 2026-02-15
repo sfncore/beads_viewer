@@ -97,9 +97,10 @@ func LoadConfigFromRoutes(routesPath string) (*Config, error) {
 		seenPath[resolvedPath] = true
 
 		repos = append(repos, RepoConfig{
-			Name:   rigName,
-			Path:   repoPath,
-			Prefix: entry.Prefix,
+			Name:         rigName,
+			Path:         repoPath,
+			Prefix:       entry.Prefix,
+			DoltDatabase: rigName,
 		})
 	}
 

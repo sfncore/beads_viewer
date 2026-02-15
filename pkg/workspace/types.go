@@ -41,6 +41,10 @@ type RepoConfig struct {
 
 	// Enabled controls whether this repo is included (default: true)
 	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+
+	// DoltDatabase is the Dolt database name for this repo (set by routes.jsonl loader).
+	// When non-empty, the workspace loader can use Dolt SQL instead of JSONL files.
+	DoltDatabase string `yaml:"-" json:"dolt_database,omitempty"`
 }
 
 // DiscoveryConfig controls automatic repository discovery
