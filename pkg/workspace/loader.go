@@ -233,14 +233,29 @@ func (l *AggregateLoader) logRepoError(repoName string, err error) {
 	}
 }
 
-// LoadAllFromConfig is a convenience function that loads a workspace config and all its repos
+// LoadAllFromConfig is a convenience function that loads a workspace config and all its repos.
+// It auto-detects whether configPath is a workspace.yaml or a routes.jsonl file.
 func LoadAllFromConfig(ctx context.Context, configPath string) ([]model.Issue, []LoadResult, error) {
-	config, err := LoadConfig(configPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to load workspace config: %w", err)
+	var config *Config
+	var workspaceRoot string
+	var err error
+
+	if IsRoutesFile(configPath) {
+		config, err = LoadConfigFromRoutes(configPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to load routes config: %w", err)
+		}
+		// routes.jsonl is at <root>/.beads/routes.jsonl
+		// Paths in the generated config are already absolute, but set root for consistency
+		workspaceRoot = filepath.Dir(filepath.Dir(configPath))
+	} else {
+		config, err = LoadConfig(configPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to load workspace config: %w", err)
+		}
+		workspaceRoot = filepath.Dir(filepath.Dir(configPath)) // .bv/workspace.yaml -> workspace root
 	}
 
-	workspaceRoot := filepath.Dir(filepath.Dir(configPath)) // .bv/workspace.yaml -> workspace root
 	loader := NewAggregateLoader(config, workspaceRoot)
 
 	return loader.LoadAll(ctx)
