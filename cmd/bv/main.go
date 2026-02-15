@@ -40,6 +40,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/search"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/triage"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/ui"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/updater"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/version"
@@ -120,6 +121,8 @@ func main() {
 	noHooks := flag.Bool("no-hooks", false, "Skip running hooks during export")
 	workspaceConfig := flag.String("workspace", "", "Load issues from workspace config file (.bv/workspace.yaml)")
 	useDolt := flag.Bool("dolt", false, "Read issues from Dolt SQL server instead of JSONL files (use with --workspace)")
+	triageRig := flag.String("triage-rig", "", "Run triage analysis on a Dolt rig and output proposals (requires --dolt)")
+	triageMerge := flag.Bool("triage-merge", false, "Merge triage branch after review (use with --triage-rig)")
 	repoFilter := flag.String("repo", "", "Filter issues by repository prefix (e.g., 'api-' or 'api')")
 	saveBaseline := flag.String("save-baseline", "", "Save current metrics as baseline with optional description")
 	baselineInfo := flag.Bool("baseline-info", false, "Show information about the current baseline")
@@ -299,6 +302,7 @@ func main() {
 		*robotByAssignee != "" ||
 		*robotCapacity ||
 		*robotDocs != "" ||
+		*triageRig != "" ||
 		// When stdout is non-TTY, --diff-since auto-enables JSON output. Mark this
 		// as robot mode early so parsers keep stdout JSON clean.
 		(*diffSince != "" && !stdoutIsTTY)
@@ -1245,6 +1249,60 @@ func main() {
 		}
 		if _, hasErr := docs["error"]; hasErr {
 			os.Exit(2) // Invalid arguments per documented exit codes
+		}
+		os.Exit(0)
+	}
+
+	// Handle --triage-rig (Dolt branch triage)
+	if *triageRig != "" {
+		if !*useDolt {
+			fmt.Fprintln(os.Stderr, "Error: --triage-rig requires --dolt")
+			os.Exit(1)
+		}
+		doltCfg := loader.DefaultDoltConfig()
+		mgr := triage.NewBranchManager(doltCfg)
+		ctx := context.Background()
+
+		branch, err := mgr.CreateTriageBranch(ctx, *triageRig)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating triage branch: %v\n", err)
+			os.Exit(1)
+		}
+
+		diffs, err := mgr.GetDiff(ctx, *triageRig, branch.BranchName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not get diffs: %v\n", err)
+		}
+
+		// JSON output for robot mode
+		output := map[string]interface{}{
+			"database":    branch.Database,
+			"branch":      branch.BranchName,
+			"created_at":  branch.CreatedAt,
+			"issues":      branch.Report.IssueCount,
+			"open_issues": branch.Report.OpenCount,
+			"proposals":   branch.Proposals,
+			"diffs":       diffs,
+		}
+
+		encoder := newRobotEncoder(os.Stdout)
+		if err := encoder.Encode(output); err != nil {
+			fmt.Fprintf(os.Stderr, "Error encoding output: %v\n", err)
+			os.Exit(1)
+		}
+
+		if *triageMerge && len(branch.Proposals) > 0 {
+			if err := mgr.MergeBranch(ctx, *triageRig, branch.BranchName); err != nil {
+				fmt.Fprintf(os.Stderr, "Error merging triage branch: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Fprintf(os.Stderr, "Merged %s into main (%d changes)\n", branch.BranchName, len(branch.Proposals))
+		} else if len(branch.Proposals) > 0 {
+			fmt.Fprintf(os.Stderr, "Branch %s created with %d proposals. Use --triage-merge to apply.\n", branch.BranchName, len(branch.Proposals))
+		} else {
+			// No proposals — clean up the branch
+			mgr.DeleteBranch(ctx, *triageRig, branch.BranchName)
+			fmt.Fprintf(os.Stderr, "No proposals for %s — branch cleaned up.\n", *triageRig)
 		}
 		os.Exit(0)
 	}
