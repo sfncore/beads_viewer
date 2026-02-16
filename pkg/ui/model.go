@@ -468,6 +468,7 @@ type Model struct {
 
 	// Workspace mode state
 	workspaceMode    bool            // True when viewing multiple repos
+	doltMode         bool            // True when loaded via --dolt (rig picker label)
 	availableRepos   []string        // List of repo prefixes available
 	activeRepos      map[string]bool // Which repos are currently shown (nil = all)
 	workspaceSummary string          // Summary text for footer (e.g., "3 repos")
@@ -603,6 +604,7 @@ type WorkspaceInfo struct {
 	FailedCount  int
 	TotalIssues  int
 	RepoPrefixes []string
+	DoltMode     bool // true when loaded via --dolt (shows "Rig" instead of "Repo")
 }
 
 func (m *Model) updateSemanticIDs(items []list.Item) {
@@ -3113,6 +3115,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.showRepoPicker {
 					m.repoPicker = NewRepoPickerModel(m.availableRepos, m.theme)
 					m.repoPicker.SetActiveRepos(m.activeRepos)
+					m.repoPicker.SetIssueCounts(m.computeRepoIssueCounts())
+					m.repoPicker.SetDoltMode(m.doltMode)
 					m.repoPicker.SetSize(m.width, m.height-1)
 					m.focused = focusRepoPicker
 				} else {
@@ -4120,6 +4124,8 @@ func (m Model) handleRepoPickerKeys(msg tea.KeyMsg) Model {
 		m.repoPicker.ToggleSelected()
 	case "a":
 		m.repoPicker.SelectAll()
+	case "A":
+		m.repoPicker.DeselectAll()
 	case "esc", "q":
 		m.showRepoPicker = false
 		m.focused = focusList
@@ -7006,6 +7012,7 @@ func (m Model) FilteredIssues() []model.Issue {
 // EnableWorkspaceMode configures the model for workspace (multi-repo) view
 func (m *Model) EnableWorkspaceMode(info WorkspaceInfo) {
 	m.workspaceMode = info.Enabled
+	m.doltMode = info.DoltMode
 	m.availableRepos = normalizeRepoPrefixes(info.RepoPrefixes)
 	m.activeRepos = nil // nil means all repos are active
 
@@ -7024,6 +7031,18 @@ func (m *Model) EnableWorkspaceMode(info WorkspaceInfo) {
 // IsWorkspaceMode returns whether workspace mode is active
 func (m Model) IsWorkspaceMode() bool {
 	return m.workspaceMode
+}
+
+// computeRepoIssueCounts tallies the number of issues per repo prefix.
+func (m *Model) computeRepoIssueCounts() map[string]int {
+	counts := make(map[string]int, len(m.availableRepos))
+	for i := range m.issues {
+		repo := strings.ToLower(ExtractRepoPrefix(m.issues[i].ID))
+		if repo != "" {
+			counts[repo]++
+		}
+	}
+	return counts
 }
 
 // enterHistoryView loads correlation data and shows the history view

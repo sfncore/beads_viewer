@@ -5002,6 +5002,7 @@ func main() {
 			FailedCount:  workspaceInfo.FailedRepos,
 			TotalIssues:  workspaceInfo.TotalIssues,
 			RepoPrefixes: workspaceInfo.RepoPrefixes,
+			DoltMode:     *useDolt,
 		})
 	}
 
