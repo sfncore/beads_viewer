@@ -559,14 +559,14 @@ for RIG in $(echo "$ALL_RIGS" | tr ',' ' '); do
     # Example for rig_health:
     jq -r '[.database, .issues, .open_issues, (.proposals | length)] | @csv' \
         "$DIR/proposals.json" | while IFS=, read -r db total open props; do
-        dolt sql -q "USE \`vibe_cockpit/{{branch}}\`;
+        dolt sql -q "USE \\`vibe_cockpit/{{branch}}\\`;
             INSERT INTO rig_health (rig_name, total_issues, open_issues, proposal_count)
             VALUES ($db, $total, $open, $props);"
     done
 
     # For JSON blob tables, store the entire file content:
     TRIAGE_JSON=$(cat "$DIR/triage.json" | jq -c '.')
-    dolt sql -q "USE \`vibe_cockpit/{{branch}}\`;
+    dolt sql -q "USE \\`vibe_cockpit/{{branch}}\\`;
         INSERT INTO rig_triage (rig_name, triage_json, rec_count)
         VALUES ('$RIG', '$TRIAGE_JSON', $(jq '.recommendations | length' "$DIR/triage.json"));"
 done
@@ -574,7 +574,7 @@ done
 # Write workspace-level results
 WS_DIR="$RESULTS_DIR/_workspace"
 WS_TRIAGE=$(cat "$WS_DIR/triage.json" | jq -c '.')
-dolt sql -q "USE \`vibe_cockpit/{{branch}}\`;
+dolt sql -q "USE \\`vibe_cockpit/{{branch}}\\`;
     REPLACE INTO workspace_triage (id, triage_json, total_issues, total_open, total_rigs)
     VALUES (1, '$WS_TRIAGE',
         $(jq '.issue_count' "$WS_DIR/triage.json"),
@@ -582,7 +582,7 @@ dolt sql -q "USE \`vibe_cockpit/{{branch}}\`;
         $(echo "$ALL_RIGS" | tr ',' '\n' | wc -l));"
 
 # Write feed metadata
-dolt sql -q "USE \`vibe_cockpit/{{branch}}\`;
+dolt sql -q "USE \\`vibe_cockpit/{{branch}}\\`;
     REPLACE INTO feed_meta (id, generated_at, rig_count, total_proposals, total_issues, cycle_id)
     VALUES (1, NOW(),
         $(echo "$ALL_RIGS" | tr ',' '\n' | wc -l),
@@ -591,7 +591,7 @@ dolt sql -q "USE \`vibe_cockpit/{{branch}}\`;
         '$(date +%Y%m%d-%H%M%S)');"
 
 # Commit
-dolt sql -q "USE \`vibe_cockpit/{{branch}}\`;
+dolt sql -q "USE \\`vibe_cockpit/{{branch}}\\`;
     CALL DOLT_COMMIT('-am', 'cockpit-feed: full algo sweep');"
 ```
 """
