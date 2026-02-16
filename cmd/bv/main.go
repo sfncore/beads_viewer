@@ -120,7 +120,7 @@ func main() {
 	profileJSON := flag.Bool("profile-json", false, "Output profile in JSON format (use with --profile-startup)")
 	noHooks := flag.Bool("no-hooks", false, "Skip running hooks during export")
 	workspaceConfig := flag.String("workspace", "", "Load issues from workspace config file (.bv/workspace.yaml)")
-	useDolt := flag.Bool("dolt", false, "Read issues from Dolt SQL server instead of JSONL files (use with --workspace)")
+	useDolt := flag.Bool("dolt", false, "Auto-discover all Dolt databases; combine with --workspace for specific routing")
 	triageRig := flag.String("triage-rig", "", "Run triage analysis on a Dolt rig and output proposals (requires --dolt)")
 	triageMerge := flag.Bool("triage-merge", false, "Merge triage branch after review (use with --triage-rig)")
 	repoFilter := flag.String("repo", "", "Filter issues by repository prefix (e.g., 'api-' or 'api')")
@@ -1409,6 +1409,26 @@ func main() {
 		// Workspace config is typically at .bv/workspace.yaml, so project root is two levels up
 		workspaceRoot := filepath.Dir(filepath.Dir(*workspaceConfig))
 		_ = loader.EnsureBVInGitignore(workspaceRoot)
+	} else if *useDolt {
+		// Auto-discover all Dolt databases and load in workspace mode
+		loadedIssues, results, err := workspace.LoadAllFromDolt(context.Background(), doltCfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading from Dolt: %v\n", err)
+			os.Exit(1)
+		}
+		issues = loadedIssues
+		summary := workspace.Summarize(results)
+		workspaceInfo = &summary
+
+		if summary.FailedRepos > 0 {
+			if !envRobot {
+				fmt.Fprintf(os.Stderr, "Warning: %d repos failed to load\n", summary.FailedRepos)
+				for _, name := range summary.FailedRepoNames {
+					fmt.Fprintf(os.Stderr, "  - %s\n", name)
+				}
+			}
+		}
+		beadsPath = ""
 	} else {
 		// Load from single repo (original behavior)
 		var err error
@@ -1946,6 +1966,8 @@ func main() {
 					var err error
 					if *workspaceConfig != "" {
 						freshIssues, _, err = workspace.LoadAllFromConfigWithDolt(context.Background(), *workspaceConfig, doltCfg)
+					} else if *useDolt {
+						freshIssues, _, err = workspace.LoadAllFromDolt(context.Background(), doltCfg)
 					} else {
 						freshIssues, err = datasource.LoadIssues("")
 					}

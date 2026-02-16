@@ -265,6 +265,25 @@ func (l *AggregateLoader) logRepoError(repoName string, err error) {
 	}
 }
 
+// LoadAllFromDolt auto-discovers all Dolt databases and loads issues from them.
+// This enables `bv --dolt` without --workspace by building a synthetic config
+// from the list of databases on the Dolt server.
+func LoadAllFromDolt(ctx context.Context, doltConfig *loader.DoltConfig) ([]model.Issue, []LoadResult, error) {
+	databases, err := loader.ListDoltDatabases(ctx, *doltConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("auto-discovering dolt databases: %w", err)
+	}
+	if len(databases) == 0 {
+		return nil, nil, fmt.Errorf("no databases found on dolt server")
+	}
+
+	config := ConfigFromDatabases(databases)
+	aggLoader := NewAggregateLoader(config, "")
+	aggLoader.SetDoltConfig(doltConfig)
+
+	return aggLoader.LoadAll(ctx)
+}
+
 // LoadAllFromConfig is a convenience function that loads a workspace config and all its repos.
 // It auto-detects whether configPath is a workspace.yaml or a routes.jsonl file.
 func LoadAllFromConfig(ctx context.Context, configPath string) ([]model.Issue, []LoadResult, error) {
