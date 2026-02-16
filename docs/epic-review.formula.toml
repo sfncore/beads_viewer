@@ -1,0 +1,336 @@
+# Epic Review Formula — Dolt Branch Triage
+#
+# Reviews an epic's health across one or more rigs using Dolt branch isolation.
+# Creates a triage branch per rig, runs bv analysis, generates proposals,
+# and produces a unified review with actionable merge/reject decisions.
+#
+# Usage:
+#   gt formula run epic-review --epic=hq-a1a2h
+#   gt formula run epic-review --epic=hq-a1a2h --rigs=bv,frankenterm
+#   gt formula run epic-review --epic=hq-a1a2h --auto-merge
+
+description = """
+Dolt-branch-based epic review using bv graph analysis.
+
+Creates isolated triage branches for each rig touched by the epic,
+runs PageRank/betweenness/critical-path analysis, and proposes changes:
+priority adjustments, stale flagging, critical-path labeling, quick-win
+identification, and cross-rig dependency surfacing.
+
+## How It Works
+
+1. **Snapshot**: Create a Dolt branch per rig (copy-on-write, ~85ms, zero disk)
+2. **Analyze**: Load issues from each branch, run bv triage algorithms
+3. **Propose**: Write changes to the branch (priority, labels, status)
+4. **Diff**: Query `dolt_diff_*` tables for exact before/after per cell
+5. **Review**: Present proposals in TUI modal or JSON output
+6. **Act**: Cherry-pick approved changes, discard rejected ones
+
+## Concurrency Model
+
+Each rig gets its own branch — writes are fully isolated and non-blocking.
+Multiple rigs can be analyzed in parallel with zero contention.
+Merges are atomic and conflict-safe (cell-wise resolution).
+
+## Prerequisites
+
+- bv binary with `--dolt` and `--triage-rig` support
+- Dolt SQL server running at 127.0.0.1:3307
+- `bd` CLI for epic/dependency queries
+"""
+formula = "epic-review"
+type = "workflow"
+version = 1
+
+[vars]
+[vars.epic]
+description = "Epic bead ID to review (e.g., hq-a1a2h)"
+required = true
+
+[vars.rigs]
+description = "Comma-separated rig names to analyze (default: auto-detect from epic dependencies)"
+required = false
+default = ""
+
+[vars.auto_merge]
+description = "Automatically merge non-conflicting proposals without review"
+required = false
+default = "false"
+
+# ============================================================================
+# Step 1: Discover scope — which rigs does this epic touch?
+# ============================================================================
+[[steps]]
+id = "discover-scope"
+title = "Discover epic scope across rigs"
+description = """
+Determine which rigs the epic touches by examining its dependency tree.
+
+```bash
+# Get the epic and its full dependency tree
+bd show {{epic}} --json
+bd children {{epic}} --recursive --json
+
+# If --rigs was provided, use that list directly
+# Otherwise, extract unique rig prefixes from the dependency tree
+```
+
+**Auto-detection logic:**
+1. Get all bead IDs in the epic's subtree (children + transitive deps)
+2. Extract the rig prefix from each ID (e.g., `bv-` from `bv-4skj`)
+3. Map prefixes to Dolt database names via `~/gt/.beads/routes.jsonl`
+4. Output: list of rig names to analyze
+
+**Output:** Set `RIGS` to the comma-separated list of rigs.
+Example: `bv,frankenterm,hq,sfgastown`
+
+If the epic has no cross-rig dependencies, there will be only one rig.
+That's fine — the analysis is still valuable for single-rig epics.
+"""
+
+# ============================================================================
+# Step 2: Create triage branches (parallel per rig)
+# ============================================================================
+[[steps]]
+id = "create-branches"
+title = "Create triage branches for each rig"
+needs = ["discover-scope"]
+description = """
+Create a Dolt triage branch for each rig in scope. These are isolated
+copy-on-write snapshots — zero disk cost, ~85ms each.
+
+```bash
+# For each rig, create branch and run analysis
+for RIG in $(echo "$RIGS" | tr ',' ' '); do
+    bv --dolt --triage-rig "$RIG" > "/tmp/triage-${RIG}.json" 2>/tmp/triage-${RIG}.log &
+done
+wait
+```
+
+Each `--triage-rig` call:
+1. Creates branch `triage-<rig>-<timestamp>`
+2. Loads all issues from main
+3. Runs full bv analysis (PageRank, betweenness, HITS, critical path)
+4. Generates proposals (priority upgrades, stale flags, critical-path labels, quick-wins)
+5. Applies proposals to the branch and commits
+6. Outputs JSON with proposals and diffs
+
+**Concurrency:** All rigs run in parallel. Dolt branches are isolated —
+writes to different branches never block each other.
+
+**If a rig fails:** Log the error and continue. Partial results are still useful.
+"""
+
+# ============================================================================
+# Step 3: Cross-rig dependency analysis
+# ============================================================================
+[[steps]]
+id = "cross-rig-analysis"
+title = "Analyze cross-rig dependencies for epic"
+needs = ["create-branches"]
+description = """
+Load all rigs' issues into a unified graph and analyze cross-rig dependencies
+specific to this epic.
+
+```bash
+# Full workspace triage scoped to the epic's dependency tree
+bv --workspace ~/gt/.beads/routes.jsonl --dolt --robot-triage --format json \
+    > /tmp/triage-workspace.json
+```
+
+**From the workspace triage, extract:**
+
+1. **Epic health metrics:**
+   - Total issues in epic subtree
+   - Open / in-progress / blocked / closed counts
+   - Completion percentage
+   - Critical path length (longest chain of blocking deps)
+
+2. **Cross-rig blockers:**
+   - Issues in rig A that block issues in rig B
+   - Sorted by downstream impact (how many items are transitively blocked)
+
+3. **Stale epic work:**
+   - Epic subtree issues with no activity for 7+ days
+   - In-progress items that may be stuck
+
+4. **Bottleneck issues:**
+   - Issues with highest betweenness centrality in the epic subgraph
+   - These are the chokepoints — clearing them unblocks the most work
+
+5. **Quick wins within the epic:**
+   - Low-complexity items that unblock multiple downstream tasks
+   - Candidates for immediate dispatch to polecats
+
+Cross-reference per-rig proposals from step 2 with the workspace-wide view.
+Flag any proposals that affect cross-rig dependencies.
+"""
+
+# ============================================================================
+# Step 4: Generate unified review report
+# ============================================================================
+[[steps]]
+id = "generate-report"
+title = "Generate epic review report"
+needs = ["cross-rig-analysis"]
+description = """
+Synthesize all per-rig proposals and cross-rig analysis into a single
+actionable review report.
+
+**Report structure:**
+
+```markdown
+# Epic Review: {{epic}}
+
+## Health Summary
+| Metric | Value |
+|--------|-------|
+| Total issues | N |
+| Open | N (N%) |
+| Blocked | N |
+| Completion | N% |
+| Critical path | N steps |
+| Rigs touched | rig1, rig2, ... |
+
+## Proposed Changes (N total)
+
+### Priority Upgrades (N)
+| Bead | Current | Proposed | Score | Reason |
+|------|---------|----------|-------|--------|
+
+### Stale Issues (N)
+| Bead | Status | Days Idle | Rig |
+|------|--------|-----------|-----|
+
+### Critical Path Labels (N)
+| Bead | Unblocks | Rig |
+|------|----------|-----|
+
+### Quick Wins (N)
+| Bead | Score | Reason | Rig |
+|------|-------|--------|-----|
+
+## Cross-Rig Blockers
+| Blocker (Rig A) | Blocked (Rig B) | Impact |
+|-----------------|-----------------|--------|
+
+## Bottleneck Analysis
+Top 5 issues by betweenness centrality in the epic subgraph.
+
+## Recommendations
+1. **Immediate actions** — merge these proposals now
+2. **Needs human review** — proposals affecting cross-rig deps
+3. **Dispatch candidates** — quick wins to sling to polecats
+4. **Escalations** — stuck/stale items needing intervention
+```
+
+Write the report to `/tmp/epic-review-{{epic}}.md` and also output as JSON.
+"""
+
+# ============================================================================
+# Step 5: Review and act
+# ============================================================================
+[[steps]]
+id = "review-and-act"
+title = "Review proposals and merge/discard"
+needs = ["generate-report"]
+description = """
+Present the review for decision-making, then act on approved proposals.
+
+**If `--auto-merge` is set:**
+Merge all non-conflicting proposals automatically:
+```bash
+for RIG in $(echo "$RIGS" | tr ',' ' '); do
+    BRANCH=$(jq -r '.branch' "/tmp/triage-${RIG}.json")
+    PROPOSALS=$(jq -r '.proposals | length' "/tmp/triage-${RIG}.json")
+    if [ "$PROPOSALS" -gt 0 ]; then
+        bv --dolt --triage-rig "$RIG" --triage-merge
+        echo "Merged $PROPOSALS proposals for $RIG"
+    fi
+done
+```
+
+**If interactive (default):**
+For each rig with proposals:
+1. Show the proposal summary from the report
+2. For each proposal, allow: accept / reject / skip
+3. Use `DOLT_CHERRY_PICK` for individual proposal commits
+4. Or `DOLT_MERGE` for all proposals on a branch
+
+**Cherry-pick workflow (selective merge):**
+```sql
+-- Accept specific proposals by cherry-picking their commits
+USE <database>;
+CALL DOLT_CHERRY_PICK('<commit_hash>');
+```
+
+**Bulk merge workflow:**
+```sql
+-- Accept all proposals on a branch
+USE <database>;
+CALL DOLT_MERGE('<branch_name>');
+```
+
+**Cleanup:**
+After review, delete triage branches that weren't merged:
+```sql
+CALL DOLT_BRANCH('-D', '<branch_name>');
+```
+
+**Output:**
+- List of merged proposals (by rig)
+- List of rejected proposals (with reason if provided)
+- Updated epic health metrics post-merge
+"""
+
+# ============================================================================
+# Step 6: Notify and dispatch
+# ============================================================================
+[[steps]]
+id = "notify-dispatch"
+title = "Notify stakeholders and dispatch work"
+needs = ["review-and-act"]
+description = """
+After the review, communicate results and dispatch follow-up work.
+
+**Notify the overseer:**
+```bash
+gt mail send --human -s "Epic review: {{epic}}" -m "
+Review complete. N proposals merged across M rigs.
+See /tmp/epic-review-{{epic}}.md for full report.
+"
+```
+
+**Dispatch quick wins to polecats:**
+For each approved quick-win, sling it to the appropriate rig:
+```bash
+# Example: sling a quick-win bead to a rig's polecat pool
+gt sling <bead-id> <rig>
+```
+
+**File follow-up beads for escalations:**
+```bash
+# For stuck/stale items that need human attention
+bd create --rig <rig> "Follow up: <description>" -t task --priority 1
+```
+
+**Update the epic status if completion threshold crossed:**
+```bash
+# If epic is now >90% complete, flag it
+bd update {{epic}} --add-label "near-complete"
+```
+
+**Nudge blocked agents:**
+If the review revealed cross-rig blockers that were just cleared:
+```bash
+gt nudge <rig>/witness "Blocker cleared: <bead-id>. Check for newly unblocked work."
+```
+"""
+
+# ============================================================================
+# Squash configuration
+# ============================================================================
+[squash]
+trigger = "on_complete"
+template_type = "work"
+include_metrics = true
