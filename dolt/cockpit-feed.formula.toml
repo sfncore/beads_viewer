@@ -1,0 +1,656 @@
+# Cockpit Feed Formula — Full BV Analysis for vibe_cockpit Backend
+#
+# Runs the complete bv algorithm suite across every rig in Gas Town and
+# materializes results into a Dolt branch that vibe_cockpit reads directly.
+# Single writer — no concurrency concerns.
+#
+# Usage:
+#   gt formula run cockpit-feed                    # One-shot refresh
+#   gt formula run cockpit-feed --cycle=5m         # Every 5 minutes
+#   gt formula run cockpit-feed --rigs=bv,hq       # Subset of rigs
+
+description = """
+Full bv analysis feed for the vibe_cockpit dashboard backend.
+
+Runs the **entire bv algorithm suite** across every rig on the Dolt server
+and materializes results into a `cockpit-feed` branch on vibe_cockpit's
+database. The cockpit backend reads this branch directly via SQL.
+
+## Algorithms Run Per Rig
+
+| Algorithm | Command | What It Produces |
+|-----------|---------|-----------------|
+| Unified triage | `--robot-triage` | PageRank, betweenness, HITS, eigenvector, critical path, recommendations |
+| Graph insights | `--robot-insights` | Hub/authority nodes, density, components, bottlenecks |
+| Execution plan | `--robot-plan` | Dependency-respecting parallel execution order |
+| Priority recs | `--robot-priority` | Priority adjustment recommendations |
+| Label health | `--robot-label-health` | Per-label health metrics (staleness, velocity, debt) |
+| Label flow | `--robot-label-flow` | Cross-label dependency matrix |
+| Label attention | `--robot-label-attention` | Attention-ranked label priorities |
+| Alerts | `--robot-alerts` | Drift detection + proactive warnings |
+| Suggestions | `--robot-suggest` | Duplicate detection, dep suggestions, label suggestions, cycles |
+| Graph export | `--robot-graph` | Full dependency graph as JSON |
+| Capacity sim | `--robot-capacity` | Completion projections, throughput estimates |
+| Forecasts | `--robot-forecast all` | ETA forecasts for all open issues |
+| Triage proposals | `--triage-rig` | Branch-based proposals (priority, stale, critical-path, quick-win) |
+
+## Workspace-Level (Cross-Rig)
+
+| Algorithm | What It Produces |
+|-----------|-----------------|
+| Workspace triage | Unified triage across all rigs |
+| Cross-rig flow | Inter-rig dependency flow matrix |
+| Cross-rig blockers | Issues in rig A blocking rig B |
+| Global graph | Full multi-rig dependency graph |
+
+## Architecture
+
+```
+Single writer, periodic:
+
+  For each rig (sequential, ~500ms each):
+    Run 13 bv commands → collect JSON results
+
+  Then workspace-level (all rigs unified):
+    Run 4 cross-rig commands → collect JSON results
+
+  Write everything to vibe_cockpit/cockpit-feed branch:
+    - rig_health         (1 row per rig: summary metrics)
+    - rig_triage         (full triage results per rig)
+    - rig_insights       (graph insights per rig)
+    - rig_plan           (execution plans per rig)
+    - rig_labels         (label health per rig per label)
+    - rig_alerts         (alerts per rig)
+    - rig_suggestions    (suggestions per rig)
+    - rig_proposals      (triage branch proposals per rig)
+    - rig_forecasts      (ETA forecasts per rig)
+    - rig_capacity       (capacity projections per rig)
+    - rig_graph          (dependency graph edges per rig)
+    - cross_rig_deps     (inter-rig dependencies)
+    - cross_rig_flow     (inter-rig label flow)
+    - workspace_triage   (unified triage across all rigs)
+    - feed_meta          (generation timestamp, stats)
+
+  Commit to branch → cockpit reads it
+```
+
+## Why a Branch (Not Main)?
+
+The cockpit-feed branch is a **materialized view** that gets rebuilt each
+cycle. Using a branch:
+- Never pollutes main's commit history
+- Old data stays readable while new data is being written
+- Zero storage cost (copy-on-write)
+- vibe_cockpit queries `USE vibe_cockpit/cockpit-feed` directly
+
+## Prerequisites
+
+- bv binary with --dolt and --triage-rig support
+- Dolt SQL server at 127.0.0.1:3307
+- Workspace config at ~/gt/.beads/routes.jsonl
+"""
+formula = "cockpit-feed"
+type = "workflow"
+version = 1
+
+[vars]
+[vars.cycle]
+description = "Refresh interval (e.g., 5m, 15m). Empty = one-shot."
+required = false
+default = ""
+
+[vars.rigs]
+description = "Comma-separated rig names (default: all databases on the Dolt server)"
+required = false
+default = ""
+
+[vars.branch]
+description = "Dolt branch name for the feed"
+required = false
+default = "cockpit-feed"
+
+# ============================================================================
+# Step 1: Discover rigs
+# ============================================================================
+[[steps]]
+id = "discover-rigs"
+title = "Discover all rigs on the Dolt server"
+description = """
+List all databases on the Dolt server to determine which rigs to analyze.
+
+```bash
+if [ -n "{{rigs}}" ]; then
+    ALL_RIGS="{{rigs}}"
+else
+    ALL_RIGS=$(dolt --host 127.0.0.1 --port 3307 --user root --password "" --no-tls sql \
+        -q "SHOW DATABASES;" -r csv | tail -n +2 | \
+        grep -v -E '^(information_schema|mysql)$' | tr '\n' ',')
+fi
+
+RESULTS_DIR="/tmp/cockpit-feed-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$RESULTS_DIR"
+echo "$ALL_RIGS" > "$RESULTS_DIR/.rigs"
+echo "Discovered rigs: $ALL_RIGS"
+```
+
+Expected: ~18 rig databases.
+"""
+
+# ============================================================================
+# Step 2: Full algo sweep per rig
+# ============================================================================
+[[steps]]
+id = "algo-sweep"
+title = "Run full bv algorithm suite per rig"
+needs = ["discover-rigs"]
+description = """
+Run every bv robot command against each rig. Single writer, sequential per rig.
+Each command outputs JSON to a separate file.
+
+```bash
+WORKSPACE="$HOME/gt/.beads/routes.jsonl"
+BV="./bv"  # or: bv
+
+for RIG in $(echo "$ALL_RIGS" | tr ',' ' '); do
+    echo "=== Analyzing $RIG ==="
+    DIR="$RESULTS_DIR/$RIG"
+    mkdir -p "$DIR"
+
+    # Core triage (PageRank, betweenness, HITS, eigenvector, critical path)
+    $BV --workspace "$WORKSPACE" --dolt --repo "${RIG}" \
+        --robot-triage --format json > "$DIR/triage.json" 2>/dev/null
+
+    # Graph insights (hubs, authorities, density, components, bottlenecks)
+    $BV --workspace "$WORKSPACE" --dolt --repo "${RIG}" \
+        --robot-insights --format json > "$DIR/insights.json" 2>/dev/null
+
+    # Execution plan (dependency-respecting parallel order)
+    $BV --workspace "$WORKSPACE" --dolt --repo "${RIG}" \
+        --robot-plan --format json > "$DIR/plan.json" 2>/dev/null
+
+    # Priority recommendations
+    $BV --workspace "$WORKSPACE" --dolt --repo "${RIG}" \
+        --robot-priority --format json > "$DIR/priority.json" 2>/dev/null
+
+    # Label health (staleness, velocity, debt per label)
+    $BV --workspace "$WORKSPACE" --dolt --repo "${RIG}" \
+        --robot-label-health --format json > "$DIR/label-health.json" 2>/dev/null
+
+    # Label flow (cross-label dependency matrix)
+    $BV --workspace "$WORKSPACE" --dolt --repo "${RIG}" \
+        --robot-label-flow --format json > "$DIR/label-flow.json" 2>/dev/null
+
+    # Label attention ranking
+    $BV --workspace "$WORKSPACE" --dolt --repo "${RIG}" \
+        --robot-label-attention --format json > "$DIR/label-attention.json" 2>/dev/null
+
+    # Alerts (drift + proactive warnings)
+    $BV --workspace "$WORKSPACE" --dolt --repo "${RIG}" \
+        --robot-alerts --format json > "$DIR/alerts.json" 2>/dev/null
+
+    # Smart suggestions (duplicates, dep suggestions, label suggestions, cycles)
+    $BV --workspace "$WORKSPACE" --dolt --repo "${RIG}" \
+        --robot-suggest --format json > "$DIR/suggestions.json" 2>/dev/null
+
+    # Dependency graph as JSON
+    $BV --workspace "$WORKSPACE" --dolt --repo "${RIG}" \
+        --robot-graph --graph-format json > "$DIR/graph.json" 2>/dev/null
+
+    # Capacity simulation
+    $BV --workspace "$WORKSPACE" --dolt --repo "${RIG}" \
+        --robot-capacity --format json > "$DIR/capacity.json" 2>/dev/null
+
+    # ETA forecasts for all open issues
+    $BV --workspace "$WORKSPACE" --dolt --repo "${RIG}" \
+        --robot-forecast all --format json > "$DIR/forecasts.json" 2>/dev/null
+
+    # Triage branch proposals (creates Dolt branch, runs analysis, proposes changes)
+    $BV --dolt --triage-rig "$RIG" > "$DIR/proposals.json" 2>/dev/null
+
+    echo "  Done: $(ls $DIR/*.json | wc -l) result files"
+done
+```
+
+**Timing:** ~500ms per rig (13 commands, each ~30-50ms).
+Full 18-rig sweep: ~9 seconds sequential. Could parallelize but single
+writer keeps things simple and predictable.
+
+**Error handling:** If a command fails for a rig, its JSON file will be
+empty or missing. The write step skips missing files gracefully.
+"""
+
+# ============================================================================
+# Step 3: Workspace-level cross-rig analysis
+# ============================================================================
+[[steps]]
+id = "workspace-analysis"
+title = "Run cross-rig workspace analysis"
+needs = ["algo-sweep"]
+description = """
+Run bv commands against the full workspace (all rigs unified) to get
+cross-rig metrics that don't exist at the per-rig level.
+
+```bash
+WORKSPACE="$HOME/gt/.beads/routes.jsonl"
+BV="./bv"
+DIR="$RESULTS_DIR/_workspace"
+mkdir -p "$DIR"
+
+# Unified triage across all rigs
+$BV --workspace "$WORKSPACE" --dolt \
+    --robot-triage --format json > "$DIR/triage.json" 2>/dev/null
+
+# Triage grouped by track (shows parallel execution tracks)
+$BV --workspace "$WORKSPACE" --dolt \
+    --robot-triage-by-track --format json > "$DIR/triage-by-track.json" 2>/dev/null
+
+# Triage grouped by label
+$BV --workspace "$WORKSPACE" --dolt \
+    --robot-triage-by-label --format json > "$DIR/triage-by-label.json" 2>/dev/null
+
+# Cross-label flow (how labels depend on each other across rigs)
+$BV --workspace "$WORKSPACE" --dolt \
+    --robot-label-flow --format json > "$DIR/label-flow.json" 2>/dev/null
+
+# Full workspace graph
+$BV --workspace "$WORKSPACE" --dolt \
+    --robot-graph --graph-format json > "$DIR/graph.json" 2>/dev/null
+
+# Workspace-wide alerts
+$BV --workspace "$WORKSPACE" --dolt \
+    --robot-alerts --format json > "$DIR/alerts.json" 2>/dev/null
+
+# Workspace capacity
+$BV --workspace "$WORKSPACE" --dolt \
+    --robot-capacity --format json > "$DIR/capacity.json" 2>/dev/null
+
+echo "Workspace analysis complete"
+```
+"""
+
+# ============================================================================
+# Step 4: Prepare cockpit-feed branch and schema
+# ============================================================================
+[[steps]]
+id = "prepare-branch"
+title = "Create or reset the cockpit-feed branch with full schema"
+needs = ["discover-rigs"]
+description = """
+Reset the cockpit-feed branch and create the full table schema.
+
+```sql
+USE vibe_cockpit;
+
+-- Force-delete old branch (ignore error if it doesn't exist)
+CALL DOLT_BRANCH('-Df', '{{branch}}');
+
+-- Create fresh branch from main
+CALL DOLT_BRANCH('{{branch}}');
+
+-- Switch to branch
+USE `vibe_cockpit/{{branch}}`;
+
+-- ============================
+-- Per-rig summary (1 row/rig)
+-- ============================
+CREATE TABLE IF NOT EXISTS rig_health (
+    rig_name            VARCHAR(64) PRIMARY KEY,
+    total_issues        INT NOT NULL DEFAULT 0,
+    open_issues         INT NOT NULL DEFAULT 0,
+    in_progress_issues  INT NOT NULL DEFAULT 0,
+    blocked_issues      INT NOT NULL DEFAULT 0,
+    closed_issues       INT NOT NULL DEFAULT 0,
+    stale_issues        INT NOT NULL DEFAULT 0,
+    completion_pct      FLOAT NOT NULL DEFAULT 0,
+    graph_density       FLOAT NOT NULL DEFAULT 0,
+    cycle_count         INT NOT NULL DEFAULT 0,
+    component_count     INT NOT NULL DEFAULT 0,
+    critical_path_len   INT NOT NULL DEFAULT 0,
+    proposal_count      INT NOT NULL DEFAULT 0,
+    alert_count         INT NOT NULL DEFAULT 0,
+    suggestion_count    INT NOT NULL DEFAULT 0,
+    top_rec_id          VARCHAR(64),
+    top_rec_score       FLOAT NOT NULL DEFAULT 0,
+    top_blocker_id      VARCHAR(64),
+    top_blocker_unblocks INT NOT NULL DEFAULT 0,
+    avg_forecast_days   FLOAT,
+    capacity_weeks      FLOAT,
+    updated_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================
+-- Full triage results (JSON blobs per rig)
+-- ============================
+CREATE TABLE IF NOT EXISTS rig_triage (
+    rig_name    VARCHAR(64) PRIMARY KEY,
+    triage_json LONGTEXT NOT NULL,
+    rec_count   INT NOT NULL DEFAULT 0,
+    quick_wins  INT NOT NULL DEFAULT 0,
+    blockers    INT NOT NULL DEFAULT 0
+);
+
+-- ============================
+-- Graph insights per rig
+-- ============================
+CREATE TABLE IF NOT EXISTS rig_insights (
+    rig_name      VARCHAR(64) PRIMARY KEY,
+    insights_json LONGTEXT NOT NULL,
+    hub_count     INT NOT NULL DEFAULT 0,
+    authority_count INT NOT NULL DEFAULT 0,
+    bottleneck_count INT NOT NULL DEFAULT 0
+);
+
+-- ============================
+-- Execution plans per rig
+-- ============================
+CREATE TABLE IF NOT EXISTS rig_plan (
+    rig_name   VARCHAR(64) PRIMARY KEY,
+    plan_json  LONGTEXT NOT NULL,
+    track_count INT NOT NULL DEFAULT 0,
+    total_steps INT NOT NULL DEFAULT 0
+);
+
+-- ============================
+-- Label health (per rig, per label)
+-- ============================
+CREATE TABLE IF NOT EXISTS rig_labels (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    rig_name    VARCHAR(64) NOT NULL,
+    label       VARCHAR(128) NOT NULL,
+    issue_count INT NOT NULL DEFAULT 0,
+    open_count  INT NOT NULL DEFAULT 0,
+    stale_pct   FLOAT NOT NULL DEFAULT 0,
+    velocity    FLOAT NOT NULL DEFAULT 0,
+    debt_score  FLOAT NOT NULL DEFAULT 0,
+    health_json LONGTEXT,
+    INDEX idx_rig (rig_name),
+    INDEX idx_label (label),
+    UNIQUE KEY uk_rig_label (rig_name, label)
+);
+
+-- ============================
+-- Alerts per rig
+-- ============================
+CREATE TABLE IF NOT EXISTS rig_alerts (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    rig_name    VARCHAR(64) NOT NULL,
+    severity    VARCHAR(16) NOT NULL,
+    alert_type  VARCHAR(64) NOT NULL,
+    title       VARCHAR(256) NOT NULL,
+    description TEXT,
+    issue_id    VARCHAR(64),
+    alert_json  LONGTEXT,
+    INDEX idx_rig (rig_name),
+    INDEX idx_severity (severity)
+);
+
+-- ============================
+-- Smart suggestions per rig
+-- ============================
+CREATE TABLE IF NOT EXISTS rig_suggestions (
+    id            INT AUTO_INCREMENT PRIMARY KEY,
+    rig_name      VARCHAR(64) NOT NULL,
+    suggest_type  VARCHAR(32) NOT NULL,
+    issue_id      VARCHAR(64),
+    target_id     VARCHAR(64),
+    confidence    FLOAT NOT NULL DEFAULT 0,
+    description   TEXT,
+    suggest_json  LONGTEXT,
+    INDEX idx_rig (rig_name),
+    INDEX idx_type (suggest_type)
+);
+
+-- ============================
+-- Triage branch proposals per rig
+-- ============================
+CREATE TABLE IF NOT EXISTS rig_proposals (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    rig_name    VARCHAR(64) NOT NULL,
+    issue_id    VARCHAR(64) NOT NULL,
+    change_type VARCHAR(32) NOT NULL,
+    field       VARCHAR(32) NOT NULL,
+    old_value   VARCHAR(256),
+    new_value   VARCHAR(256),
+    reason      TEXT,
+    score       FLOAT NOT NULL DEFAULT 0,
+    INDEX idx_rig (rig_name),
+    INDEX idx_issue (issue_id)
+);
+
+-- ============================
+-- ETA forecasts per rig
+-- ============================
+CREATE TABLE IF NOT EXISTS rig_forecasts (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    rig_name    VARCHAR(64) NOT NULL,
+    issue_id    VARCHAR(64) NOT NULL,
+    eta_days    FLOAT,
+    confidence  FLOAT NOT NULL DEFAULT 0,
+    blockers    INT NOT NULL DEFAULT 0,
+    forecast_json LONGTEXT,
+    INDEX idx_rig (rig_name),
+    INDEX idx_issue (issue_id)
+);
+
+-- ============================
+-- Capacity projections per rig
+-- ============================
+CREATE TABLE IF NOT EXISTS rig_capacity (
+    rig_name          VARCHAR(64) PRIMARY KEY,
+    open_work_days    FLOAT NOT NULL DEFAULT 0,
+    throughput_per_wk FLOAT NOT NULL DEFAULT 0,
+    weeks_to_clear    FLOAT,
+    capacity_json     LONGTEXT
+);
+
+-- ============================
+-- Dependency graph edges per rig
+-- ============================
+CREATE TABLE IF NOT EXISTS rig_graph (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    rig_name    VARCHAR(64) NOT NULL,
+    from_id     VARCHAR(64) NOT NULL,
+    to_id       VARCHAR(64) NOT NULL,
+    dep_type    VARCHAR(32),
+    INDEX idx_rig (rig_name),
+    INDEX idx_from (from_id),
+    INDEX idx_to (to_id)
+);
+
+-- ============================
+-- Cross-rig dependencies
+-- ============================
+CREATE TABLE IF NOT EXISTS cross_rig_deps (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    source_rig  VARCHAR(64) NOT NULL,
+    target_rig  VARCHAR(64) NOT NULL,
+    blocker_id  VARCHAR(64) NOT NULL,
+    blocked_id  VARCHAR(64) NOT NULL,
+    is_blocking BOOLEAN NOT NULL DEFAULT FALSE,
+    INDEX idx_source (source_rig),
+    INDEX idx_target (target_rig)
+);
+
+-- ============================
+-- Cross-rig label flow
+-- ============================
+CREATE TABLE IF NOT EXISTS cross_rig_flow (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    from_label  VARCHAR(128) NOT NULL,
+    to_label    VARCHAR(128) NOT NULL,
+    from_rig    VARCHAR(64),
+    to_rig      VARCHAR(64),
+    issue_count INT NOT NULL DEFAULT 0,
+    INDEX idx_from (from_label),
+    INDEX idx_to (to_label)
+);
+
+-- ============================
+-- Workspace-level unified triage
+-- ============================
+CREATE TABLE IF NOT EXISTS workspace_triage (
+    id           INT PRIMARY KEY DEFAULT 1,
+    triage_json  LONGTEXT NOT NULL,
+    total_issues INT NOT NULL DEFAULT 0,
+    total_open   INT NOT NULL DEFAULT 0,
+    total_rigs   INT NOT NULL DEFAULT 0,
+    rec_count    INT NOT NULL DEFAULT 0,
+    graph_json   LONGTEXT,
+    capacity_json LONGTEXT,
+    alerts_json  LONGTEXT
+);
+
+-- ============================
+-- Feed metadata
+-- ============================
+CREATE TABLE IF NOT EXISTS feed_meta (
+    id                INT PRIMARY KEY DEFAULT 1,
+    generated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    rig_count         INT NOT NULL DEFAULT 0,
+    total_proposals   INT NOT NULL DEFAULT 0,
+    total_issues      INT NOT NULL DEFAULT 0,
+    total_open        INT NOT NULL DEFAULT 0,
+    total_alerts      INT NOT NULL DEFAULT 0,
+    total_suggestions INT NOT NULL DEFAULT 0,
+    sweep_duration_ms INT NOT NULL DEFAULT 0,
+    cycle_id          VARCHAR(64),
+    algo_versions     VARCHAR(256)
+);
+```
+
+The schema is designed for the cockpit to query efficiently:
+- Summary dashboards read `rig_health` (one SELECT, 18 rows)
+- Drill-down reads the specific table (`rig_triage`, `rig_alerts`, etc.)
+- Cross-rig views read `cross_rig_deps` and `cross_rig_flow`
+- JSON blobs stored for full fidelity when the dashboard needs raw data
+"""
+
+# ============================================================================
+# Step 5: Write all results to branch
+# ============================================================================
+[[steps]]
+id = "write-feed"
+title = "Write all algorithm results to cockpit-feed branch"
+needs = ["algo-sweep", "workspace-analysis", "prepare-branch"]
+description = """
+Parse all JSON results and write them to the cockpit-feed tables.
+
+For each rig, read its result files and INSERT into the corresponding tables.
+JSON blobs are stored verbatim for full fidelity — the cockpit can parse
+them client-side for detailed views.
+
+```bash
+for RIG in $(echo "$ALL_RIGS" | tr ',' ' '); do
+    DIR="$RESULTS_DIR/$RIG"
+    [ -d "$DIR" ] || continue
+
+    # Parse triage.json → rig_health + rig_triage
+    # Parse insights.json → rig_insights
+    # Parse plan.json → rig_plan
+    # Parse label-health.json → rig_labels (one row per label)
+    # Parse alerts.json → rig_alerts (one row per alert)
+    # Parse suggestions.json → rig_suggestions (one row per suggestion)
+    # Parse proposals.json → rig_proposals (one row per proposal)
+    # Parse forecasts.json → rig_forecasts (one row per issue)
+    # Parse capacity.json → rig_capacity
+    # Parse graph.json → rig_graph (one row per edge)
+
+    # Use jq + dolt sql to transform and INSERT
+    # Example for rig_health:
+    jq -r '[.database, .issues, .open_issues, (.proposals | length)] | @csv' \
+        "$DIR/proposals.json" | while IFS=, read -r db total open props; do
+        dolt sql -q "USE \`vibe_cockpit/{{branch}}\`;
+            INSERT INTO rig_health (rig_name, total_issues, open_issues, proposal_count)
+            VALUES ($db, $total, $open, $props);"
+    done
+
+    # For JSON blob tables, store the entire file content:
+    TRIAGE_JSON=$(cat "$DIR/triage.json" | jq -c '.')
+    dolt sql -q "USE \`vibe_cockpit/{{branch}}\`;
+        INSERT INTO rig_triage (rig_name, triage_json, rec_count)
+        VALUES ('$RIG', '$TRIAGE_JSON', $(jq '.recommendations | length' "$DIR/triage.json"));"
+done
+
+# Write workspace-level results
+WS_DIR="$RESULTS_DIR/_workspace"
+WS_TRIAGE=$(cat "$WS_DIR/triage.json" | jq -c '.')
+dolt sql -q "USE \`vibe_cockpit/{{branch}}\`;
+    REPLACE INTO workspace_triage (id, triage_json, total_issues, total_open, total_rigs)
+    VALUES (1, '$WS_TRIAGE',
+        $(jq '.issue_count' "$WS_DIR/triage.json"),
+        $(jq '.open_count' "$WS_DIR/triage.json"),
+        $(echo "$ALL_RIGS" | tr ',' '\n' | wc -l));"
+
+# Write feed metadata
+dolt sql -q "USE \`vibe_cockpit/{{branch}}\`;
+    REPLACE INTO feed_meta (id, generated_at, rig_count, total_proposals, total_issues, cycle_id)
+    VALUES (1, NOW(),
+        $(echo "$ALL_RIGS" | tr ',' '\n' | wc -l),
+        $(find $RESULTS_DIR -name proposals.json -exec jq '.proposals | length' {} + | paste -sd+ | bc),
+        $(find $RESULTS_DIR -name proposals.json -exec jq '.issues' {} + | paste -sd+ | bc),
+        '$(date +%Y%m%d-%H%M%S)');"
+
+# Commit
+dolt sql -q "USE \`vibe_cockpit/{{branch}}\`;
+    CALL DOLT_COMMIT('-am', 'cockpit-feed: full algo sweep');"
+```
+"""
+
+# ============================================================================
+# Step 6: Clean up triage branches
+# ============================================================================
+[[steps]]
+id = "cleanup"
+title = "Clean up per-rig triage branches"
+needs = ["write-feed"]
+description = """
+Delete per-rig triage branches created during the sweep. The data has been
+materialized into cockpit-feed — the per-rig branches are no longer needed.
+
+```bash
+for RIG in $(echo "$ALL_RIGS" | tr ',' ' '); do
+    BRANCH=$(jq -r '.branch // empty' "$RESULTS_DIR/$RIG/proposals.json" 2>/dev/null)
+    [ -n "$BRANCH" ] || continue
+    dolt --host 127.0.0.1 --port 3307 --user root --password "" --no-tls sql \
+        -q "USE $RIG; CALL DOLT_BRANCH('-Df', '$BRANCH');" 2>/dev/null
+done
+rm -rf "$RESULTS_DIR"
+echo "Cleanup complete"
+```
+"""
+
+# ============================================================================
+# Step 7: Verify and signal
+# ============================================================================
+[[steps]]
+id = "verify"
+title = "Verify feed and signal cockpit"
+needs = ["cleanup"]
+description = """
+Verify the cockpit-feed branch is readable and signal vibe_cockpit.
+
+```sql
+USE `vibe_cockpit/{{branch}}`;
+SELECT rig_name, total_issues, open_issues, proposal_count FROM rig_health ORDER BY rig_name;
+SELECT * FROM feed_meta;
+SELECT COUNT(*) as alert_count FROM rig_alerts;
+SELECT COUNT(*) as suggestion_count FROM rig_suggestions;
+SELECT COUNT(*) as forecast_count FROM rig_forecasts;
+SELECT COUNT(*) as graph_edges FROM rig_graph;
+```
+
+**Signal cockpit to refresh:**
+```bash
+gt nudge vibe_cockpit/witness "cockpit-feed updated: $(date +%H:%M) — full algo sweep"
+```
+
+**If --cycle is set:** Sleep for the interval, then loop back to step 1.
+"""
+
+# ============================================================================
+# Squash configuration
+# ============================================================================
+[squash]
+trigger = "on_complete"
+template_type = "patrol"
+include_metrics = true
